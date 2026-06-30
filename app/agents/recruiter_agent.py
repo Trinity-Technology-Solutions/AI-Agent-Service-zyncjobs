@@ -27,7 +27,12 @@ class RecruiterAgent(BaseAgent):
         detected = self.skill_extractor.run(title + " " + query)
         all_skills = list(dict.fromkeys(list(skills) + detected))
 
+        history = memory.get_history(user_id) if user_id else []
         prompt = prompt_manager.build_jd_prompt(title, experience, all_skills, query)
+        if history:
+            prompt += "\n\nConversation history:\n" + "\n".join(
+                f"{m['role']}: {m['content'][:200]}" for m in history[-5:]
+            )
         prompt = self.augment_with_context(prompt, query)
         jd = await self.generate(prompt, system=JD_SYSTEM_PROMPT)
 

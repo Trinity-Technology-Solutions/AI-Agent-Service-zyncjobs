@@ -42,9 +42,14 @@ class ResumeAgent(BaseAgent):
 
         detected_skills = self.skill_extractor.extract_from_resume(parsed)
 
+        history = memory.get_history(user_id) if user_id else []
         improve_prompt = prompt_manager.build_resume_prompt(
             resume_text, parsed, grammar_issues, ats_result or None, detected_skills
         )
+        if history:
+            improve_prompt += "\n\nConversation history:\n" + "\n".join(
+                f"{m['role']}: {m['content'][:200]}" for m in history[-5:]
+            )
         improve_prompt = self.augment_with_context(improve_prompt, query)
         improved = await self.generate(improve_prompt, system=RESUME_SYSTEM_PROMPT)
 

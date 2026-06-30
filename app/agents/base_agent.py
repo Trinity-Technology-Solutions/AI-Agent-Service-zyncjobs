@@ -38,5 +38,5 @@ class BaseAgent(ABC):
     def augment_with_context(self, prompt: str, query: str) -> str:
         context = self.retrieve_context(query)
         if context:
-            return f"{prompt}\n\nRelevant Knowledge:\n{context}"
+            return f"{prompt}\n\nUse the following knowledge to inform your response, but DO NOT include it verbatim in your output:\n{context}"
         return prompt

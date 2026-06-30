@@ -30,10 +30,15 @@ class InterviewAgent(BaseAgent):
         detected = self.skill_extractor.run(job_title + " " + query)
         all_skills = list(dict.fromkeys(list(skills) + detected))
 
+        history = memory.get_history(user_id) if user_id else []
         prompt = prompt_manager.build_interview_prompt(
             job_title, all_skills, level,
             f"{query}\nKey areas: {self.keyword_tool.run(job_title, 5)}"
         )
+        if history:
+            prompt += "\n\nConversation history:\n" + "\n".join(
+                f"{m['role']}: {m['content'][:200]}" for m in history[-5:]
+            )
         prompt = self.augment_with_context(prompt, query)
         questions = await self.generate(prompt, system=INTERVIEW_SYSTEM_PROMPT)
 

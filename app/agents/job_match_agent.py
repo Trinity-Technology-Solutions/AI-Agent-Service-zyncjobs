@@ -32,7 +32,12 @@ class JobMatchAgent(BaseAgent):
         jd_skills = self.skill_extractor.run(job_description)
         missing = self.skill_extractor.suggest_missing(resume_skills, jd_skills)
 
+        history = memory.get_history(user_id) if user_id else []
         prompt = prompt_manager.build_job_match_prompt(resume_text, job_description, ats_result)
+        if history:
+            prompt += "\n\nConversation history:\n" + "\n".join(
+                f"{m['role']}: {m['content'][:200]}" for m in history[-5:]
+            )
         prompt = self.augment_with_context(prompt, query)
         suggestions = await self.generate(prompt, system=JOB_MATCH_SYSTEM_PROMPT)
 

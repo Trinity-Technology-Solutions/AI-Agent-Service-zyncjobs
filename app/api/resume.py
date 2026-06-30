@@ -15,7 +15,7 @@ class ImproveResponse(BaseModel):
     ats_score: int | None
     summary: str
     skills_suggested: list[str]
-    grammar_issues: list[str]
+    grammar_issues: list[dict]
 
 
 @router.post("/improve", response_model=ImproveResponse)

@@ -14,11 +14,11 @@ class Settings:
     # Ollama model parameters
     OLLAMA_TEMPERATURE: float = float(os.getenv("OLLAMA_TEMPERATURE", "0.3"))
     OLLAMA_NUM_CTX: int = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
-    OLLAMA_NUM_PREDICT: int = int(os.getenv("OLLAMA_NUM_PREDICT", "600"))
-    OLLAMA_TOP_P: float = float(os.getenv("OLLAMA_TOP_P", "0.9"))
-    OLLAMA_TOP_K: int = int(os.getenv("OLLAMA_TOP_K", "40"))
-    OLLAMA_REPEAT_PENALTY: float = float(os.getenv("OLLAMA_REPEAT_PENALTY", "1.1"))
-    OLLAMA_NUM_THREAD: int = int(os.getenv("OLLAMA_NUM_THREAD", "6"))
+    OLLAMA_NUM_PREDICT: int = int(os.getenv("OLLAMA_NUM_PREDICT", "300"))
+    OLLAMA_TOP_P: float = float(os.getenv("OLLAMA_TOP_P", "0.85"))
+    OLLAMA_TOP_K: int = int(os.getenv("OLLAMA_TOP_K", "30"))
+    OLLAMA_REPEAT_PENALTY: float = float(os.getenv("OLLAMA_REPEAT_PENALTY", "1.0"))
+    OLLAMA_NUM_THREAD: int = int(os.getenv("OLLAMA_NUM_THREAD", "8"))
     OLLAMA_NUM_GPU: int = int(os.getenv("OLLAMA_NUM_GPU", "0"))
     OLLAMA_SEED: int = int(os.getenv("OLLAMA_SEED", "0"))
     OLLAMA_STOP: list[str] = os.getenv("OLLAMA_STOP", "").split(",") if os.getenv("OLLAMA_STOP") else []

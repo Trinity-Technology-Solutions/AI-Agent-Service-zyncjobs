@@ -17,11 +17,16 @@ class ChatbotV2Request(BaseModel):
     user_role: Optional[str] = "candidate"
 
 
+class SourceInfo(BaseModel):
+    title: str = ""
+    url: str = ""
+    category: str = ""
+
 class ChatbotV2Response(BaseModel):
     reply: str
     intent: str
     session_id: str
-    entities: dict = {}
+    sources: list[SourceInfo] = []
     is_fallback: bool = False
 
 

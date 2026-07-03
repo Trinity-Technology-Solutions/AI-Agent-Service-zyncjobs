@@ -1,7 +1,7 @@
 import asyncio
 from abc import ABC, abstractmethod
 from typing import Optional
-from app.llm.router import router as llm_router
+from app.services.ai_service import ai_service
 from app.knowledge.knowledge_base import knowledge_base
 from app.utils.logger import logger
 
@@ -10,7 +10,6 @@ class BaseAgent(ABC):
     def __init__(self, name: str, description: str):
         self.name = name
         self.description = description
-        self.llm = llm_router
 
     @abstractmethod
     def system_prompt(self) -> str:
@@ -25,9 +24,14 @@ class BaseAgent(ABC):
         pass
 
     async def generate(self, prompt: str, system: Optional[str] = None, **kwargs) -> str:
-        return await asyncio.to_thread(
-            self.llm.generate, prompt, system=system or self.system_prompt(), **kwargs
-        )
+        def sync_call():
+            return ai_service.generate(
+                prompt=prompt,
+                system=system or self.system_prompt(),
+                feature_name=self.name,
+                **kwargs,
+            ).content
+        return await asyncio.to_thread(sync_call)
 
     def retrieve_context(self, query: str, max_chars: int = 1500) -> str:
         context = knowledge_base.build_context(query, max_chars=max_chars)

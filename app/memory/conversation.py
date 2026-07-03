@@ -1,18 +1,29 @@
+import json
 from datetime import datetime, timezone
+from app.config.settings import settings
+from .backend import memory_backend
+
+
+def _key(user_id: str) -> str:
+    return f"conv:{user_id}"
 
 
 class ConversationMemory:
-    def __init__(self):
-        self._store: dict[str, list[dict]] = {}
-
     def add(self, user_id: str, entry: dict):
-        if user_id not in self._store:
-            self._store[user_id] = []
+        raw = memory_backend.get(_key(user_id))
+        history: list[dict] = json.loads(raw) if raw else []
         entry["timestamp"] = datetime.now(timezone.utc).isoformat()
-        self._store[user_id].append(entry)
+        history.append(entry)
+        window = settings.AGENT_MEMORY_WINDOW * 2
+        if len(history) > window:
+            history = history[-window:]
+        memory_backend.set(_key(user_id), json.dumps(history), ttl=settings.CONVERSATION_TTL)
 
-    def get_history(self, user_id: str, limit: int = 20) -> list[dict]:
-        return self._store.get(user_id, [])[-limit:]
+    def get_history(self, user_id: str, limit: int = 0) -> list[dict]:
+        raw = memory_backend.get(_key(user_id))
+        history: list[dict] = json.loads(raw) if raw else []
+        effective_limit = limit or settings.AGENT_MEMORY_WINDOW * 2
+        return history[-effective_limit:]
 
     def clear(self, user_id: str):
-        self._store.pop(user_id, None)
+        memory_backend.delete(_key(user_id))

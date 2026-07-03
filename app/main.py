@@ -4,12 +4,15 @@ from fastapi.responses import HTMLResponse
 import httpx
 from app.config.settings import settings
 from app.api.chat import router as chat_router
+from app.api.chatbot_v2 import router as chatbot_v2_router
 from app.api.resume import router as resume_router
 from app.api.career import router as career_router
 from app.api.recruiter import router as recruiter_router
 from app.api.interview import router as interview_router
 from app.api.job import router as job_router
 from app.api.knowledge import router as knowledge_router
+from app.api.ranking import router as ranking_router
+from app.api.monitoring import router as monitoring_router
 from app.gateway.service_registry import service_registry
 from app.services import resume_service, career_service, interview_service, recruiter_service, job_service, chat_service
 from app.middleware.logging_middleware import LoggingMiddleware
@@ -114,12 +117,15 @@ register_error_handlers(app)
 app.add_middleware(LoggingMiddleware)
 
 app.include_router(chat_router, prefix="/api/v1/chat", tags=["Chat"])
+app.include_router(chatbot_v2_router, prefix="/api/v1/chatbot", tags=["Chatbot V2"])
 app.include_router(resume_router, prefix="/api/v1/resume", tags=["Resume"])
 app.include_router(career_router, prefix="/api/v1/career", tags=["Career"])
 app.include_router(recruiter_router, prefix="/api/v1/recruiter", tags=["Recruiter"])
 app.include_router(interview_router, prefix="/api/v1/interview", tags=["Interview"])
 app.include_router(job_router, prefix="/api/v1/job", tags=["Job"])
 app.include_router(knowledge_router, prefix="/api/v1/knowledge", tags=["Knowledge"])
+app.include_router(ranking_router, prefix="/api/v1/ranking", tags=["Ranking"])
+app.include_router(monitoring_router, prefix="/api/v1/admin/ai", tags=["AI Monitoring"])
 
 
 @app.get("/", response_class=HTMLResponse)

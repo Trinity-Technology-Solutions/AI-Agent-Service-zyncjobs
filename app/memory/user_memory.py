@@ -1,61 +1,62 @@
+import json
 from datetime import datetime, timezone
+from .backend import memory_backend
+
+
+def _key(user_id: str) -> str:
+    return f"user:{user_id}"
+
+
+def _subkey(user_id: str, field: str) -> str:
+    return f"user:{user_id}:{field}"
 
 
 class UserMemory:
-    def __init__(self):
-        self._store: dict[str, dict] = {}
-
     def save_profile(self, user_id: str, data: dict):
-        if user_id not in self._store:
-            self._store[user_id] = {}
-        self._store[user_id]["profile"] = {
-            **self._store[user_id].get("profile", {}),
-            **data,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
+        raw = memory_backend.get(_subkey(user_id, "profile"))
+        profile: dict = json.loads(raw) if raw else {}
+        profile.update(data)
+        profile["updated_at"] = datetime.now(timezone.utc).isoformat()
+        memory_backend.set(_subkey(user_id, "profile"), json.dumps(profile))
 
     def get_profile(self, user_id: str) -> dict:
-        return self._store.get(user_id, {}).get("profile", {})
+        raw = memory_backend.get(_subkey(user_id, "profile"))
+        return json.loads(raw) if raw else {}
 
     def save_resume(self, user_id: str, resume_data: dict):
-        if user_id not in self._store:
-            self._store[user_id] = {}
-        self._store[user_id]["resume"] = {
-            **resume_data,
-            "saved_at": datetime.now(timezone.utc).isoformat(),
-        }
+        resume_data["saved_at"] = datetime.now(timezone.utc).isoformat()
+        memory_backend.set(_subkey(user_id, "resume"), json.dumps(resume_data))
 
     def get_resume(self, user_id: str) -> dict:
-        return self._store.get(user_id, {}).get("resume", {})
+        raw = memory_backend.get(_subkey(user_id, "resume"))
+        return json.loads(raw) if raw else {}
 
     def save_skills(self, user_id: str, skills: list[str]):
-        if user_id not in self._store:
-            self._store[user_id] = {}
-        existing = self._store[user_id].get("skills", [])
+        raw = memory_backend.get(_subkey(user_id, "skills"))
+        existing: list[str] = json.loads(raw) if raw else []
         merged = list(dict.fromkeys(existing + skills))
-        self._store[user_id]["skills"] = merged
+        memory_backend.set(_subkey(user_id, "skills"), json.dumps(merged))
 
     def get_skills(self, user_id: str) -> list[str]:
-        return self._store.get(user_id, {}).get("skills", [])
+        raw = memory_backend.get(_subkey(user_id, "skills"))
+        return json.loads(raw) if raw else []
 
     def save_goal(self, user_id: str, goal: str):
-        if user_id not in self._store:
-            self._store[user_id] = {}
-        self._store[user_id]["career_goal"] = {
-            "goal": goal,
-            "set_at": datetime.now(timezone.utc).isoformat(),
-        }
+        data = {"goal": goal, "set_at": datetime.now(timezone.utc).isoformat()}
+        memory_backend.set(_subkey(user_id, "goal"), json.dumps(data))
 
     def get_goal(self, user_id: str) -> str:
-        return self._store.get(user_id, {}).get("career_goal", {}).get("goal", "")
+        raw = memory_backend.get(_subkey(user_id, "goal"))
+        return json.loads(raw).get("goal", "") if raw else ""
 
     def remember(self, user_id: str, key: str, value):
-        if user_id not in self._store:
-            self._store[user_id] = {}
-        self._store[user_id][key] = value
+        memory_backend.set(_subkey(user_id, key), json.dumps(value))
 
     def recall(self, user_id: str, key: str):
-        return self._store.get(user_id, {}).get(key)
+        raw = memory_backend.get(_subkey(user_id, key))
+        return json.loads(raw) if raw else None
 
     def clear(self, user_id: str):
-        self._store.pop(user_id, None)
+        memory_backend.delete(_key(user_id))
+        for field in ("profile", "resume", "skills", "goal"):
+            memory_backend.delete(_subkey(user_id, field))

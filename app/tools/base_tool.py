@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Any
 
 
 class BaseTool(ABC):
@@ -6,6 +7,10 @@ class BaseTool(ABC):
         self.name = name
         self.description = description
 
+    @property
+    def result_schema(self) -> dict:
+        return {"type": "object", "properties": {}}
+
     @abstractmethod
-    def run(self, *args, **kwargs):
+    def run(self, *args, **kwargs) -> Any:
         pass

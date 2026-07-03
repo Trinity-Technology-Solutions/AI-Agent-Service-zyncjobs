@@ -18,6 +18,17 @@ class ATSTool(BaseTool):
             description="Compares resume against job description to calculate ATS score and find matching/missing keywords",
         )
 
+    @property
+    def result_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "score": {"type": "integer", "minimum": 0, "maximum": 100},
+                "matching_keywords": {"type": "array", "items": {"type": "string"}},
+                "missing_keywords": {"type": "array", "items": {"type": "string"}},
+            },
+        }
+
     def run(self, resume_text: str, job_description: str) -> dict:
         resume_lower = resume_text.lower()
         jd_lower = job_description.lower()

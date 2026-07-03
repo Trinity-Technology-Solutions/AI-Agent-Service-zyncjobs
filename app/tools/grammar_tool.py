@@ -28,6 +28,20 @@ class GrammarTool(BaseTool):
             description="Checks text for common grammar and spelling issues",
         )
 
+    @property
+    def result_schema(self) -> dict:
+        return {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string"},
+                    "message": {"type": "string"},
+                    "severity": {"type": "string", "enum": ["low", "medium", "high"]},
+                },
+            },
+        }
+
     def run(self, text: str) -> list[dict]:
         issues = []
 

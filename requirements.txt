@@ -79,5 +79,10 @@ typing_extensions==4.15.0
 uritemplate==4.2.0
 urllib3==2.5.0
 uvicorn==0.38.0
+pydantic-settings==2.7.0
+python-jose[cryptography]==3.3.0
+tenacity==9.1.2
+sqlalchemy[asyncio]==2.0.41
+aiosqlite==0.21.0
 Werkzeug==2.3.7
 yarl==1.22.0

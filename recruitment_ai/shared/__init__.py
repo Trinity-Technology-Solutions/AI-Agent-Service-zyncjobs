@@ -1,0 +1,1 @@
+"""Shared components for recruitment AI platform."""

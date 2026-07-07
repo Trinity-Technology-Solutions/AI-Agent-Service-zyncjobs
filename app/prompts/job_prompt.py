@@ -1,6 +1,0 @@
-from .system_prompt import JD_SYSTEM_PROMPT, INTERVIEW_SYSTEM_PROMPT, JOB_MATCH_SYSTEM_PROMPT
-from .prompt_manager import prompt_manager
-
-build_jd_prompt = prompt_manager.build_jd_prompt
-build_interview_prompt = prompt_manager.build_interview_prompt
-build_job_match_prompt = prompt_manager.build_job_match_prompt

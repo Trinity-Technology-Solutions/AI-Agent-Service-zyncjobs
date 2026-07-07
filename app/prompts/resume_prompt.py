@@ -1,6 +1,0 @@
-from .system_prompt import RESUME_SYSTEM_PROMPT, ATS_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT, SKILLS_SYSTEM_PROMPT, COVER_LETTER_SYSTEM_PROMPT
-from .prompt_manager import prompt_manager
-
-build_resume_prompt = prompt_manager.build_resume_prompt
-build_summary_prompt = prompt_manager.build_summary_prompt
-build_skills_prompt = prompt_manager.build_skills_prompt

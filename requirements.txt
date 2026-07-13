@@ -84,5 +84,6 @@ python-jose[cryptography]==3.3.0
 tenacity==9.1.2
 sqlalchemy[asyncio]==2.0.41
 aiosqlite==0.21.0
+asyncpg==0.29.0
 Werkzeug==2.3.7
 yarl==1.22.0

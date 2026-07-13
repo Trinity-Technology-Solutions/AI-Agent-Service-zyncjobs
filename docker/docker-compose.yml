@@ -10,25 +10,16 @@ services:
     env_file:
       - ../.env
     environment:
-      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_BASE_URL=http://172.18.0.1:11434
       - REDIS_URL=redis://redis:6379/0
       - POSTGRES_HOST=postgres
       - QDRANT_HOST=qdrant
       - LOKI_URL=http://loki:3100
       - USE_SQLITE=false
     depends_on:
-      - ollama
       - redis
       - postgres
       - qdrant
-    restart: unless-stopped
-
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
     restart: unless-stopped
 
   qdrant:
@@ -90,7 +81,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  ollama_data:
   qdrant_data:
   redis_data:
   postgres_data:

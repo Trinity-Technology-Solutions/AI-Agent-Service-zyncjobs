@@ -248,13 +248,29 @@ class CareerBrain(Brain):
         return state
 
     async def _resume_builder(self, state: BrainState, context: dict) -> BrainState:
-        prompt = RESUME_BUILDER_PROMPT.format(
-            personal_info=json.dumps(context.get("personal_info", {})),
-            experience=json.dumps(context.get("experience", [])),
-            education=json.dumps(context.get("education", [])),
-            skills=json.dumps(context.get("skills", {})),
-            target_role=context.get("target_role", "Software Engineer"),
-        )
+        # If structured context provided, use template; otherwise use free-text query
+        if context.get("personal_info") or context.get("experience") or context.get("skills"):
+            prompt = RESUME_BUILDER_PROMPT.format(
+                personal_info=json.dumps(context.get("personal_info", {})),
+                experience=json.dumps(context.get("experience", [])),
+                education=json.dumps(context.get("education", [])),
+                skills=json.dumps(context.get("skills", {})),
+                target_role=context.get("target_role", "Software Engineer"),
+            )
+        else:
+            prompt = f"""Generate resume content based on this description:
+
+{state.query}
+
+Return JSON with:
+{{
+  "summary": "Professional summary (3-4 lines)",
+  "experience_bullets": [
+    {{"company": "", "bullets": ["bullet1", "bullet2"]}}
+  ],
+  "skills_formatted": {{"technical": [], "soft": []}},
+  "ats_keywords": ["keyword1", "keyword2"]
+}}"""
         try:
             result = await ollama_service.generate(
                 brain_name="resume_builder",
@@ -264,6 +280,8 @@ class CareerBrain(Brain):
                 max_tokens=2048,
             )
             state.result = self._parse_json(result)
+            if not state.result:
+                raise ValueError("Empty parse")
         except Exception:
             state.result = {"summary": "", "experience_bullets": [], "skills_formatted": {}, "ats_keywords": []}
         return state

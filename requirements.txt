@@ -43,7 +43,7 @@ MarkupSafe==3.0.3
 mistralai==1.9.11
 multidict==6.7.0
 openai==0.28.1
-packaging==25.0
+packaging==24.2
 pdf2image==1.17.0
 pdfminer.six==20251107
 pdfplumber==0.11.8

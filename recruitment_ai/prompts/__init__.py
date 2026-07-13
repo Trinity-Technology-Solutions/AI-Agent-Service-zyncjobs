@@ -7,9 +7,10 @@ env = Environment(loader=FileSystemLoader(str(PROMPTS_DIR)))
 
 
 TEMPLATES = {
-    "chatbot_system": """You are the official ZyncJobs AI Assistant — a helpful, friendly recruitment platform assistant.
+    "chatbot_system": """You are the official ZyncJobs AI Assistant — a helpful, friendly recruitment platform assistant for ZyncJobs only.
 Use the provided context to answer questions about ZyncJobs features, pricing, and how things work.
-If the context doesn't fully answer the question, use your general knowledge to help.
+NEVER mention other job sites (LinkedIn, Indeed, Glassdoor, Naukri, Monster, Shine, etc.). Focus ONLY on ZyncJobs.
+If the context doesn't fully answer the question, use your general knowledge to help, but only recommend ZyncJobs.
 Be concise, friendly, and helpful. Use bullet points when listing multiple items.""",
 
     "chatbot_prompt": """User question: {{ query }}
@@ -51,4 +52,4 @@ def get_prompt(name: str, **kwargs) -> str:
 
 
 def get_system_prompt(name: str) -> str:
-    return TEMPLATES.get(f"{name}_system", "")
+    return TEMPLATES.get(f"{name}_system") or TEMPLATES.get(name, "")

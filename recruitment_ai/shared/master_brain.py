@@ -10,6 +10,10 @@ from recruitment_ai.brains.candidate.resume_parser_brain import ResumeParserBrai
 from recruitment_ai.brains.candidate.ats_brain import ATSBrain
 from recruitment_ai.brains.candidate.job_matching_brain import JobMatchingBrain
 from recruitment_ai.brains.candidate.career_brain import CareerBrain
+from recruitment_ai.brains.candidate.skill_gap_brain import SkillGapBrain
+from recruitment_ai.brains.candidate.career_roadmap_brain import CareerRoadmapBrain
+from recruitment_ai.brains.candidate.resume_edit_brain import resume_edit_brain
+from recruitment_ai.brains.candidate.cover_letter_brain import CoverLetterBrain
 from recruitment_ai.brains.employer.recruiter_brain import RecruiterBrain
 
 
@@ -29,11 +33,15 @@ class MasterBrain:
             "JOB_MATCH": JobMatchingBrain(),
             "CAREER_ADVICE": CareerBrain(),
             "SKILL_ASSESSMENT": CareerBrain(),
+            "SKILL_GAP": SkillGapBrain(),
+            "CAREER_ROADMAP": CareerRoadmapBrain(),
             "INTERVIEW_PREP": CareerBrain(),
             "RESUME_BUILDER": CareerBrain(),
             "RECRUITER": RecruiterBrain(),
             "RECRUITER_SEARCH": RecruiterBrain(),
             "RECRUITER_SHORTLIST": RecruiterBrain(),
+            "RESUME_EDIT": resume_edit_brain,
+            "COVER_LETTER": CoverLetterBrain(),
             "CHAT": ChatbotBrain(),
         }
 

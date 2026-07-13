@@ -8,34 +8,8 @@ from recruitment_ai.config.settings import settings
 class OllamaService:
     """Async Ollama client with model routing."""
 
-    MODEL_MAP = {
-        "chatbot": "qwen2.5:3b",
-        "job_parser": "qwen2.5:3b",
-        "jd_generator": "qwen2.5:3b",
-        "resume_parser": "qwen2.5:3b",
-        "ats_scanner": "qwen2.5:3b",
-        "job_matching": "qwen2.5:3b",
-        "career_advice": "qwen2.5:3b",
-        "recruiter": "qwen2.5:3b",
-        "skill_assessment": "qwen2.5:3b",
-        "interview_prep": "qwen2.5:3b",
-        "resume_builder": "qwen2.5:3b",
-    }
-
-    # Production model map (uncomment when RAM available):
-    # MODEL_MAP = {
-    #     "chatbot": "llama3.1:8b",
-    #     "job_parser": "qwen3:8b",
-    #     "jd_generator": "llama3.1:8b",
-    #     "resume_parser": "qwen3:8b",
-    #     "ats_scanner": "qwen3:8b",
-    #     "job_matching": "qwen3:8b",
-    #     "recruiter": "llama3.1:8b",
-    #     "career_advice": "llama3.1:8b",
-    #     "skill_assessment": "qwen3:8b",
-    #     "interview_prep": "llama3.1:8b",
-    #     "resume_builder": "llama3.1:8b",
-    # }
+    # Dev fallback — used when a brain key is not in settings.OLLAMA_MODELS
+    _DEV_MODEL = "qwen2.5:3b"
 
     def __init__(self):
         self.base_url = settings.OLLAMA_BASE_URL
@@ -48,8 +22,8 @@ class OllamaService:
         return self._client
 
     def get_model(self, brain_name: str) -> str:
-        """Get model for a brain."""
-        return self.MODEL_MAP.get(brain_name.lower(), settings.OLLAMA_MODEL)
+        """Get model for a brain — reads from settings.OLLAMA_MODELS, falls back to dev model."""
+        return settings.OLLAMA_MODELS.get(brain_name.lower(), self._DEV_MODEL)
 
     async def _do_generate(
         self,

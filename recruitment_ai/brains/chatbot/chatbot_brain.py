@@ -94,8 +94,9 @@ class ChatbotBrain(Brain):
 
     async def _general_answer(self, query: str) -> str:
         """Answer general questions about ZyncJobs using LLM knowledge."""
-        system = """You are the ZyncJobs AI Assistant — a helpful recruitment platform assistant.
+        system = """You are the ZyncJobs AI Assistant — a helpful recruitment platform assistant for ZyncJobs only.
 ZyncJobs is an AI-powered job portal connecting candidates and employers in India and globally.
+NEVER mention other job sites (LinkedIn, Indeed, Glassdoor, Naukri, Monster, Shine, etc.). Focus ONLY on ZyncJobs.
 Answer helpfully and concisely. If you don't know something specific about ZyncJobs, say so and suggest contacting support."""
         try:
             return await ollama_service.generate(

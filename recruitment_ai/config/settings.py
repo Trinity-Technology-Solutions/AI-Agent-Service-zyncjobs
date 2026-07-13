@@ -21,22 +21,47 @@ class Settings(BaseSettings):
     API_PORT: int = 8001
 
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    OLLAMA_TIMEOUT: int = 120
+    OLLAMA_TIMEOUT: int = int(os.getenv("OLLAMA_TIMEOUT", "120"))
+    # Production model map — matches architecture doc Brain-to-Model table.
+    # OllamaService reads this directly via settings.OLLAMA_MODELS.
+    # Keys must match brain_name strings passed to ollama_service.generate().
+    # Change values here to swap models without touching any brain code.
+    # Model map — override via OLLAMA_MODELS env var in production.
+    # Local dev defaults to qwen2.5:3b (only model currently pulled).
+    # Production: pull llama3.1:8b and qwen3:8b then set via env.
+    _DEFAULT_MODEL: str = os.getenv("OLLAMA_DEFAULT_MODEL", "qwen2.5:3b")
+
     OLLAMA_MODELS: dict = {
-        "chatbot": "llama3.1:8b",
-        "job_parser": "qwen3:8b",
-        "jd_generator": "llama3.1:8b",
-        "ats_scanner": "qwen3:8b",
-        "job_matching": "qwen3:8b",
-        "career": "llama3.1:8b",
+        # Candidate brains
+        "career_advice": os.getenv("MODEL_CAREER_ADVICE", os.getenv("OLLAMA_DEFAULT_MODEL", "qwen2.5:3b")),
+        "skill_assessment": os.getenv("MODEL_SKILL_ASSESSMENT", os.getenv("OLLAMA_DEFAULT_MODEL", "qwen2.5:3b")),
+        "interview_prep": os.getenv("MODEL_INTERVIEW_PREP", os.getenv("OLLAMA_DEFAULT_MODEL", "qwen2.5:3b")),
+        "resume_builder": os.getenv("MODEL_RESUME_BUILDER", os.getenv("OLLAMA_DEFAULT_MODEL", "qwen2.5:3b")),
+        "resume_parser": os.getenv("MODEL_RESUME_PARSER", os.getenv("OLLAMA_DEFAULT_MODEL", "qwen2.5:3b")),
+        "ats_scanner": os.getenv("MODEL_ATS_SCANNER", os.getenv("OLLAMA_DEFAULT_MODEL", "qwen2.5:3b")),
+        "job_matching": os.getenv("MODEL_JOB_MATCHING", os.getenv("OLLAMA_DEFAULT_MODEL", "qwen2.5:3b")),
+        # Employer brains
+        "job_parser": os.getenv("MODEL_JOB_PARSER", os.getenv("OLLAMA_DEFAULT_MODEL", "qwen2.5:3b")),
+        "jd_generator": os.getenv("MODEL_JD_GENERATOR", os.getenv("OLLAMA_DEFAULT_MODEL", "qwen2.5:3b")),
+        "recruiter": os.getenv("MODEL_RECRUITER", os.getenv("OLLAMA_DEFAULT_MODEL", "qwen2.5:3b")),
+        # Chatbot
+        "chatbot": os.getenv("MODEL_CHATBOT", os.getenv("OLLAMA_DEFAULT_MODEL", "qwen2.5:3b")),
+        # Additional models from architecture doc
+        "mistral": os.getenv("MODEL_MISTRAL", os.getenv("OLLAMA_DEFAULT_MODEL", "qwen2.5:3b")),
+        "gemma": os.getenv("MODEL_GEMMA", os.getenv("OLLAMA_DEFAULT_MODEL", "qwen2.5:3b")),
+        # Resume edit brain (section-specific AI edits)
+        "resume_edit": os.getenv("MODEL_RESUME_EDIT", os.getenv("OLLAMA_DEFAULT_MODEL", "qwen2.5:3b")),
+        # Cover letter brain
+        "cover_letter": os.getenv("MODEL_COVER_LETTER", os.getenv("OLLAMA_DEFAULT_MODEL", "qwen2.5:3b")),
+        # Embeddings
         "embedding": "nomic-embed-text",
     }
 
     POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "localhost")
     POSTGRES_PORT: int = int(os.getenv("POSTGRES_PORT", "5432"))
-    POSTGRES_DB: str = os.getenv("POSTGRES_DB", "recruitment_ai")
-    POSTGRES_USER: str = os.getenv("POSTGRES_USER", "recruitment")
-    POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD", "recruitment_pass")
+    POSTGRES_DB: str = os.getenv("POSTGRES_DB", "zyncjobs_ai")
+    POSTGRES_USER: str = os.getenv("POSTGRES_USER", "zyncjobs")
+    POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD", "zyncjobs_pass")
 
     @property
     def DATABASE_URL(self) -> str:
@@ -74,6 +99,29 @@ class Settings(BaseSettings):
 
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"
+    LOKI_URL: str = os.getenv("LOKI_URL", "http://localhost:3100")
+
+    def configure_logging(self):
+        """Configure structured JSON logging + Loki handler if available."""
+        import logging
+        import sys
+        logging.basicConfig(
+            level=getattr(logging, self.LOG_LEVEL, logging.INFO),
+            format='{"time": "%(asctime)s", "level": "%(levelname)s", "name": "%(name)s", "msg": "%(message)s"}',
+            stream=sys.stdout,
+        )
+        if self.LOKI_URL and self.LOKI_URL != "http://localhost:3100":
+            try:
+                import logging_loki  # python-logging-loki package
+                loki_handler = logging_loki.LokiHandler(
+                    url=f"{self.LOKI_URL}/loki/api/v1/push",
+                    tags={"app": self.APP_NAME, "env": self.ENVIRONMENT},
+                    version="1",
+                )
+                logging.getLogger().addHandler(loki_handler)
+                logging.getLogger(__name__).info("Loki logging enabled: %s", self.LOKI_URL)
+            except Exception as e:
+                logging.getLogger(__name__).warning("Loki handler unavailable: %s", e)
 
     RATE_LIMIT_REQUESTS: int = 100
     RATE_LIMIT_WINDOW_SECONDS: int = 60

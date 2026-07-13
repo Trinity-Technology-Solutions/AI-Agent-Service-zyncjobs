@@ -8,9 +8,15 @@ from recruitment_ai.shared.ollama_service import ollama_service
 CAREER_SYSTEM = """You are an expert career advisor for tech professionals.
 Return ONLY valid JSON as specified. No extra text, no markdown, no explanation."""
 
-CAREER_CHAT_SYSTEM = """You are ZyncJobs AI Career Coach — a friendly, expert career advisor.
-Give concise, actionable advice on career planning, resume writing, interview prep, skill gaps, and salary negotiation.
-Keep responses clear and encouraging. Use bullet points. Max 3-4 short paragraphs."""
+CAREER_CHAT_SYSTEM = """You are ZyncJobs AI Career Mentor — an expert, personalized career advisor for the ZyncJobs platform.
+You already know the candidate's profile. Use it to give specific, data-driven advice.
+Never say generic things. Always refer to their actual skills, role, ATS score, and goals.
+NEVER mention other job sites (LinkedIn, Indeed, Glassdoor, Naukri, Monster, Shine, etc.).
+Direct candidates to ZyncJobs platform features only.
+Be direct, encouraging, and mentor-like. Use bullet points. Max 3-4 short paragraphs.
+
+Candidate Profile:
+{user_context}"""
 
 INTERVIEW_SYSTEM = """You are an expert technical interviewer.
 Return ONLY valid JSON as specified. No extra text, no markdown, no explanation."""
@@ -43,24 +49,28 @@ Return JSON with:
 }}"""
 
 
-SKILL_ASSESSMENT_PROMPT = """Generate skill assessment questions.
+SKILL_ASSESSMENT_SYSTEM = """You are a technical interviewer generating MCQ questions.
+Return ONLY valid JSON. No markdown, no explanation, no code blocks."""
 
-Skill: {skill}
-Level: {level}  # beginner|intermediate|advanced
-Question Count: {count}
+SKILL_ASSESSMENT_PROMPT = """Generate exactly {count} multiple choice questions about {skill} for a {level} level assessment.
 
-Return JSON with:
+Return ONLY this JSON structure:
 {{
   "questions": [
     {{
-      "question": "What is...?",
-      "type": "multiple_choice|code|short_answer",
-      "options": ["A", "B", "C", "D"],
-      "correct_answer": "A",
-      "explanation": "Why this is correct"
+      "question": "What does the 'let' keyword do in JavaScript?",
+      "options": ["Declares a block-scoped variable", "Declares a function", "Imports a module", "Creates a class"],
+      "correctAnswer": 0
     }}
   ]
-}}"""
+}}
+
+Rules:
+- EXACTLY {count} questions specifically about {skill}
+- Each question must have exactly 4 real, meaningful options (NOT placeholders like 'Option A' or 'A')
+- correctAnswer is the 0-based index (0, 1, 2, or 3) of the correct option
+- Questions must test real practical knowledge of {skill}
+- Return ONLY the JSON object, nothing else"""
 
 
 INTERVIEW_PREP_PROMPT = """Generate interview preparation for a role.
@@ -110,36 +120,51 @@ class CareerBrain(Brain):
         context = state.context or {}
         query = state.query or ""
 
-        # Free-text chat query (from Career Coach page) — return conversational reply
-        has_structured_context = any(k in context for k in ("current_role", "target_role", "skill", "role", "personal_info"))
-        if intent == "CAREER_ADVICE" and not has_structured_context:
-            return await self._chat_advice(state, query)
-
-        if intent == "CAREER_ADVICE":
-            return await self._career_advice(state, context)
-        elif intent == "SKILL_ASSESSMENT":
+        if intent == "SKILL_ASSESSMENT":
             return await self._skill_assessment(state, context)
         elif intent == "INTERVIEW_PREP":
             return await self._interview_prep(state, context)
         elif intent == "RESUME_BUILDER":
             return await self._resume_builder(state, context)
+        elif intent == "CAREER_ADVICE":
+            # Structured context (from generateCareerRoadmap) → generate roadmap
+            if context.get("current_role") and context.get("target_role"):
+                return await self._career_advice(state, context)
+            # Free-text chat → conversational reply
+            return await self._chat_advice(state, query)
         else:
             return await self._chat_advice(state, query)
 
     async def _chat_advice(self, state: BrainState, query: str) -> BrainState:
-        """Handle free-text career questions conversationally."""
-        # Strip the routing prefix added by frontend
+        """Handle free-text career questions conversationally with user context."""
         clean_query = re.sub(r'^career advice:\s*', '', query, flags=re.IGNORECASE).strip()
+        context = state.context or {}
+        # Build user context string from injected profile data
+        user_ctx_parts = []
+        if context.get("user_name"): user_ctx_parts.append(f"Name: {context['user_name']}")
+        if context.get("current_role"): user_ctx_parts.append(f"Current Role: {context['current_role']}")
+        if context.get("target_role"): user_ctx_parts.append(f"Target Role: {context['target_role']}")
+        if context.get("skills"): user_ctx_parts.append(f"Skills: {', '.join(context['skills'][:10])}")
+        if context.get("ats_score"): user_ctx_parts.append(f"ATS Score: {context['ats_score']}%")
+        if context.get("experience_years"): user_ctx_parts.append(f"Experience: {context['experience_years']}")
+        if context.get("applications_count"): user_ctx_parts.append(f"Applications sent: {context['applications_count']}")
+        if context.get("missing_skills"): user_ctx_parts.append(f"Missing skills: {', '.join(context['missing_skills'][:5])}")
+        user_context = "\n".join(user_ctx_parts) if user_ctx_parts else "No profile data available."
+        system = CAREER_CHAT_SYSTEM.format(user_context=user_context)
+        # Inject RAG context if available
+        rag_docs = context.get("rag_context", [])
+        rag_text = "\n".join(d["text"] for d in rag_docs[:3]) if rag_docs else ""
+        prompt = f"{clean_query}\n\nRelevant context:\n{rag_text}" if rag_text else clean_query
         try:
             reply = await ollama_service.generate(
                 brain_name="career_advice",
-                prompt=clean_query,
-                system=CAREER_CHAT_SYSTEM,
+                prompt=prompt,
+                system=system,
                 temperature=0.4,
                 max_tokens=600,
             )
             reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
-            state.result = {"reply": reply, "intent": "CAREER_ADVICE"}
+            state.result = {"reply": reply, "intent": "CAREER_ADVICE", "rag_used": bool(rag_text)}
         except Exception:
             state.result = {"reply": "I'm having trouble right now. Please try again in a moment.", "intent": "CAREER_ADVICE"}
         return state
@@ -167,24 +192,35 @@ class CareerBrain(Brain):
         return state
 
     async def _skill_assessment(self, state: BrainState, context: dict) -> BrainState:
+        skill = context.get("skill", "Python")
         prompt = SKILL_ASSESSMENT_PROMPT.format(
-            skill=context.get("skill", "Python"),
+            skill=skill,
             level=context.get("level", "intermediate"),
-            count=context.get("count", 5),
+            count=context.get("count", 10),
         )
         try:
             result = await ollama_service.generate(
                 brain_name="skill_assessment",
                 prompt=prompt,
-                system=CAREER_SYSTEM,
+                system=SKILL_ASSESSMENT_SYSTEM,
                 temperature=0.3,
-                max_tokens=2048,
+                max_tokens=3000,
             )
-            state.result = self._parse_json(result)
-            if not state.result:
-                raise ValueError("Empty result")
-        except Exception:
-            state.result = {"questions": [], "error": "Assessment generation failed"}
+            parsed = self._parse_json(result)
+            questions = parsed.get("questions", []) if parsed else []
+            # Validate: filter out placeholder options and wrong types
+            valid = [
+                q for q in questions
+                if q.get("question") and
+                isinstance(q.get("options"), list) and len(q["options"]) == 4 and
+                isinstance(q.get("correctAnswer"), int) and 0 <= q["correctAnswer"] <= 3 and
+                not any(o.strip() in ("A", "B", "C", "D") for o in q["options"])
+            ]
+            if len(valid) < 5:
+                raise ValueError(f"Only {len(valid)} valid questions generated")
+            state.result = {"questions": valid[:10]}
+        except Exception as e:
+            state.result = {"questions": [], "error": str(e)}
             state.metadata["fallback"] = True
         return state
 

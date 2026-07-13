@@ -5,7 +5,7 @@ from recruitment_ai.config.settings import settings
 
 
 class OllamaEmbedder:
-    def __init__(self, model: str = "nomic-embed-text"):
+    def __init__(self, model: str = "bge-m3"):  # architecture doc: BGE-M3 embeddings
         self.model = model
         self.base_url = settings.OLLAMA_BASE_URL.rstrip("/")
         self._client = httpx.Client(timeout=30)

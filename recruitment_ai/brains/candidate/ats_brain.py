@@ -55,7 +55,7 @@ class ATSBrain(Brain):
                 prompt=prompt,
                 system=ATS_SYSTEM,
                 temperature=0.1,
-                max_tokens=1024,
+                max_tokens=512,
             )
             state.result = self._parse_json(result)
             state.metadata["model"] = "qwen3:8b"

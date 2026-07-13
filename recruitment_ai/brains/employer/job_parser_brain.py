@@ -39,7 +39,9 @@ class JobParserBrain(Brain):
         super().__init__()
 
     async def run(self, state: BrainState) -> BrainState:
-        content = state.file_content or state.query or ""
+        from recruitment_ai.utils.ocr import extract_text
+        raw_content = state.file_content or state.query or ""
+        content = extract_text(raw_content, state.file_type or "txt") if state.file_type else raw_content
         if not content.strip():
             state.error = "No job description provided"
             return state

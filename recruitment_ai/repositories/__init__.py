@@ -1,89 +1,117 @@
-"""Data access repositories for database operations."""
-from typing import Optional, List
-from sqlalchemy import select, update, delete
-from sqlalchemy.ext.asyncio import AsyncSession
-from recruitment_ai.database.models import User, JobPost, Resume, Conversation, KnowledgeChunk
-from recruitment_ai.database.connection import async_session_factory, init_db
-from datetime import datetime
+"""Repository layer — abstracts all DB access from brains and services.
+Architecture doc: repositories/ pattern for PostgreSQL queries.
+"""
+from typing import Optional
+from sqlalchemy import select, desc
+from recruitment_ai.database.connection import get_db
+from recruitment_ai.database.models import User, Resume, JobPost, Conversation, KnowledgeChunk
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class UserRepository:
     async def get_by_user_id(self, user_id: str) -> Optional[User]:
-        async with async_session_factory() as session:
-            result = await session.execute(select(User).where(User.user_id == user_id))
-            return result.scalar_one_or_none()
+        try:
+            async for db in get_db():
+                result = await db.execute(select(User).where(User.user_id == user_id))
+                return result.scalar_one_or_none()
+        except Exception as e:
+            logger.warning("UserRepository.get_by_user_id error: %s", e)
+        return None
 
-    async def create(self, user_id: str, email: str = None, role: str = "candidate", name: str = None) -> User:
-        async with async_session_factory() as session:
-            user = User(user_id=user_id, email=email, role=role, name=name)
-            session.add(user)
-            await session.commit()
-            await session.refresh(user)
-            return user
-
-    async def update_profile(self, user_id: str, profile_data: dict) -> Optional[User]:
-        async with async_session_factory() as session:
-            result = await session.execute(select(User).where(User.user_id == user_id))
-            user = result.scalar_one_or_none()
-            if user:
-                user.profile_data = profile_data
-                user.updated_at = datetime.utcnow()
-                await session.commit()
-                await session.refresh(user)
-            return user
-
-
-class JobPostRepository:
-    async def search(self, skills: list[str] = None, location: str = None, job_type: str = None, limit: int = 20) -> List[JobPost]:
-        async with async_session_factory() as session:
-            query = select(JobPost).where(JobPost.is_active == True)
-            if location:
-                query = query.where(JobPost.location.ilike(f"%{location}%"))
-            if job_type:
-                query = query.where(JobPost.job_type == job_type)
-            query = query.limit(limit)
-            result = await session.execute(query.order_by(JobPost.created_at.desc()))
-            return list(result.scalars().all())
-
-    async def create(self, data: dict) -> JobPost:
-        async with async_session_factory() as session:
-            job = JobPost(**data)
-            session.add(job)
-            await session.commit()
-            await session.refresh(job)
-            return job
+    async def upsert(self, user_id: str, role: str, email: Optional[str] = None) -> Optional[User]:
+        try:
+            async for db in get_db():
+                result = await db.execute(select(User).where(User.user_id == user_id))
+                user = result.scalar_one_or_none()
+                if not user:
+                    user = User(user_id=user_id, role=role, email=email)
+                    db.add(user)
+                return user
+        except Exception as e:
+            logger.warning("UserRepository.upsert error: %s", e)
+        return None
 
 
 class ResumeRepository:
-    async def get_by_user(self, user_id: int) -> List[Resume]:
-        async with async_session_factory() as session:
-            result = await session.execute(select(Resume).where(Resume.user_id == user_id))
-            return list(result.scalars().all())
+    async def save(self, user_id: int, raw_text: str, parsed_data: dict, ats_score: Optional[int] = None) -> Optional[Resume]:
+        try:
+            async for db in get_db():
+                resume = Resume(user_id=user_id, raw_text=raw_text, parsed_data=parsed_data, ats_score=ats_score)
+                db.add(resume)
+                return resume
+        except Exception as e:
+            logger.warning("ResumeRepository.save error: %s", e)
+        return None
 
-    async def save(self, user_id: int, raw_text: str, parsed_data: dict = None) -> Resume:
-        async with async_session_factory() as session:
-            resume = Resume(user_id=user_id, raw_text=raw_text, parsed_data=parsed_data)
-            session.add(resume)
-            await session.commit()
-            await session.refresh(resume)
-            return resume
+    async def get_latest(self, user_id: int) -> Optional[Resume]:
+        try:
+            async for db in get_db():
+                result = await db.execute(
+                    select(Resume).where(Resume.user_id == user_id).order_by(desc(Resume.created_at)).limit(1)
+                )
+                return result.scalar_one_or_none()
+        except Exception as e:
+            logger.warning("ResumeRepository.get_latest error: %s", e)
+        return None
+
+
+class JobPostRepository:
+    async def save(self, data: dict) -> Optional[JobPost]:
+        try:
+            async for db in get_db():
+                job = JobPost(**{k: v for k, v in data.items() if hasattr(JobPost, k)})
+                db.add(job)
+                return job
+        except Exception as e:
+            logger.warning("JobPostRepository.save error: %s", e)
+        return None
+
+    async def get_active(self, limit: int = 20) -> list[JobPost]:
+        try:
+            async for db in get_db():
+                result = await db.execute(
+                    select(JobPost).where(JobPost.is_active == True).order_by(desc(JobPost.created_at)).limit(limit)
+                )
+                return list(result.scalars().all())
+        except Exception as e:
+            logger.warning("JobPostRepository.get_active error: %s", e)
+        return []
 
 
 class ConversationRepository:
-    async def get_by_session(self, session_id: str, limit: int = 20) -> List[Conversation]:
-        async with async_session_factory() as session:
-            result = await session.execute(
-                select(Conversation)
-                .where(Conversation.session_id == session_id)
-                .order_by(Conversation.created_at.asc())
-                .limit(limit)
-            )
-            return list(result.scalars().all())
+    async def get_history(self, session_id: str, limit: int = 20) -> list[dict]:
+        try:
+            async for db in get_db():
+                result = await db.execute(
+                    select(Conversation)
+                    .where(Conversation.session_id == session_id)
+                    .order_by(desc(Conversation.created_at))
+                    .limit(limit)
+                )
+                rows = list(reversed(result.scalars().all()))
+                return [{"role": r.role, "content": r.content} for r in rows]
+        except Exception as e:
+            logger.warning("ConversationRepository.get_history error: %s", e)
+        return []
 
-    async def add_message(self, session_id: str, role: str, content: str, user_id: int = None) -> Conversation:
-        async with async_session_factory() as session:
-            msg = Conversation(session_id=session_id, role=role, content=content, user_id=user_id)
-            session.add(msg)
-            await session.commit()
-            await session.refresh(msg)
-            return msg
+    async def save_turn(self, session_id: str, user_id: Optional[int], role: str, content: str, intent: str) -> None:
+        try:
+            async for db in get_db():
+                db.add(Conversation(
+                    session_id=session_id,
+                    user_id=user_id,
+                    role=role,
+                    content=content,
+                    metadata_json={"intent": intent},
+                ))
+        except Exception as e:
+            logger.warning("ConversationRepository.save_turn error: %s", e)
+
+
+# Singleton instances
+user_repo = UserRepository()
+resume_repo = ResumeRepository()
+job_repo = JobPostRepository()
+conversation_repo = ConversationRepository()

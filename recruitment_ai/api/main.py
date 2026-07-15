@@ -7,13 +7,20 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from prometheus_client import Counter, Histogram, generate_latest, REGISTRY
 from recruitment_ai.config.settings import settings
 from recruitment_ai.auth.jwt_handler import get_current_user, create_access_token
-from recruitment_ai.shared.master_brain import master_brain
-from recruitment_ai.shared.brain import BrainState
-from recruitment_ai.workflows.recruitment_workflow import graph
+from recruitment_ai.brains.master.master_brain import master_brain
+from recruitment_ai.brains.base import BrainState
+from recruitment_ai.workflows.recruitment_graph import graph
 from recruitment_ai.vector.store import vector_store
-from recruitment_ai.api.middleware import error_handler_middleware, request_logger_middleware
-from pydantic import BaseModel
-from typing import Optional
+from recruitment_ai.api.middleware import error_handler_middleware, request_logger_middleware, RateLimitMiddleware
+from recruitment_ai.api.routers import (
+    resume_router, jobs_router, chat_router, recruiter_router, skills_router,
+)
+from recruitment_ai.api.routers.tasks import router as tasks_router
+from recruitment_ai.api.routers.admin import router as admin_router
+from recruitment_ai.api.routers.knowledge import router as knowledge_router
+from recruitment_ai.api.routers.ats import router as ats_router
+from recruitment_ai.api.routers.suggestions import router as suggestions_router
+from recruitment_ai.schemas import ExecuteRequest, ExecuteResponse, AuthRequest
 
 # ── Prometheus metrics ───────────────────────────────────────────────
 AI_REQUESTS = Counter(
@@ -34,32 +41,8 @@ CACHE_HITS = Counter(
 )
 
 
-class ExecuteRequest(BaseModel):
-    query: str
-    session_id: Optional[str] = None
-    user_role: str = "candidate"
-    context: Optional[dict] = None
-    file_content: Optional[str] = None
-    file_type: Optional[str] = None
-
-
-class ExecuteResponse(BaseModel):
-    success: bool
-    intent: Optional[str] = None
-    result: Optional[dict] = None
-    error: Optional[str] = None
-    metadata: dict = {}
-
-
 # OAuth2 scheme — architecture doc: OAuth2 + JWT
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/oauth2/token")
-
-
-class TokenRequest(BaseModel):
-    user_id: str
-    role: str = "candidate"
-    email: Optional[str] = None
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -85,8 +68,8 @@ async def lifespan(app: FastAPI):
     yield
     await cache_service.close()
     await vector_store.close()
-    from recruitment_ai.shared.ollama_service import ollama_service
-    await ollama_service.close()
+    from recruitment_ai.llm import llm_service
+    await llm_service.close()
 
 
 app = FastAPI(
@@ -97,7 +80,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -105,10 +88,23 @@ app.add_middleware(
 
 app.middleware("http")(request_logger_middleware)
 app.middleware("http")(error_handler_middleware)
+app.add_middleware(RateLimitMiddleware)
+
+# ── Domain routers ───────────────────────────────────────────────────
+app.include_router(resume_router)
+app.include_router(jobs_router)
+app.include_router(chat_router)
+app.include_router(recruiter_router)
+app.include_router(skills_router)
+app.include_router(tasks_router)
+app.include_router(admin_router)
+app.include_router(ats_router)
+app.include_router(knowledge_router)
+app.include_router(suggestions_router)
 
 
 @app.post("/auth/token")
-async def create_token(request: TokenRequest):
+async def create_token(request: AuthRequest):
     token = create_access_token({"sub": request.user_id, "role": request.role, "email": request.email})
     return {"access_token": token, "token_type": "bearer"}
 
@@ -124,17 +120,33 @@ async def oauth2_token(form: OAuth2PasswordRequestForm = Depends()):
 async def execute_ai(request: ExecuteRequest, user: dict = Depends(get_current_user)):
     import time
     workflow_input = {
-        "query": request.query,
-        "session_id": request.session_id,
-        "user_id": user.get("user_id"),
-        "user_role": request.user_role,
-        "context": request.context,
-        "file_content": request.file_content,
-        "file_type": request.file_type,
+        # ── Enterprise sub-objects (provide all so LangGraph channels are never empty) ──
+        "user": {"id": user.get("user_id"), "email": user.get("email"), "role": request.user_role},
+        "session": {"id": request.session_id},
+        "conversation": {},
+        "context_data": {"user_preferences": request.context or {}},
+        "retrieved_documents": {},
+        "provider_info": {},
+        "execution": {},
+        "request": {"query": request.query, "file_content": request.file_content, "file_type": request.file_type},
+        "response": None,
         "intent": None,
-        "result": None,
         "error": None,
         "metadata": {},
+        # ── Backward-compat flat fields ──
+        "query": request.query,
+        "user_id": user.get("user_id"),
+        "session_id": request.session_id,
+        "conversation_id": request.session_id,
+        "user_role": request.user_role,
+        "context": request.context or {},
+        "file_content": request.file_content,
+        "file_type": request.file_type,
+        "retrieved_context": [],
+        "memory": [],
+        "result": None,
+        "provider": "",
+        "model": "",
     }
 
     start = time.perf_counter()
@@ -159,8 +171,8 @@ async def execute_ai(request: ExecuteRequest, user: dict = Depends(get_current_u
 
 @app.get("/health")
 async def health():
-    from recruitment_ai.shared.ollama_service import ollama_service
-    ollama_ok = await ollama_service.health_check()
+    from recruitment_ai.llm import llm_service
+    ollama_ok = await llm_service.health_check()
     return {
         "status": "healthy" if ollama_ok else "degraded",
         "service": settings.APP_NAME,
@@ -191,7 +203,7 @@ async def version():
         "version": settings.APP_VERSION,
         "brains": list(master_brain.brains.keys()),
         "knowledge_chunks": vector_store.count,
-        "ollama_model": settings.OLLAMA_MODELS.get("chatbot", "unknown"),
+        "llm_provider": settings.LLM_PROVIDER,
     }
 
 

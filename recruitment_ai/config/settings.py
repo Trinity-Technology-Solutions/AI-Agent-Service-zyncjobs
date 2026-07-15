@@ -20,8 +20,17 @@ class Settings(BaseSettings):
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8001
 
+    # LLM Provider: "ollama" (dev) or "bedrock" (production)
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "ollama")
+
+    # Ollama (development)
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     OLLAMA_TIMEOUT: int = int(os.getenv("OLLAMA_TIMEOUT", "120"))
+
+    # Amazon Bedrock (production)
+    AWS_REGION: str = os.getenv("AWS_REGION", "ap-south-1")
+    BEDROCK_MODEL: str = os.getenv("BEDROCK_MODEL", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+    BEDROCK_EMBED_MODEL: str = os.getenv("BEDROCK_EMBED_MODEL", "amazon.titan-embed-text-v2:0")
     # Production model map — matches architecture doc Brain-to-Model table.
     # OllamaService reads this directly via settings.OLLAMA_MODELS.
     # Keys must match brain_name strings passed to ollama_service.generate().
@@ -97,6 +106,18 @@ class Settings(BaseSettings):
     RAG_FALLBACK_DISTANCE: float = 0.7
     RAG_MAX_CONTEXT_CHARS: int = 1500
 
+    # AWS S3 — file storage for resumes, JD documents
+    S3_BUCKET: str = os.getenv("S3_BUCKET", "zyncjobs.com")
+    S3_REGION: str = os.getenv("S3_REGION", os.getenv("AWS_REGION", "ap-south-1"))
+    S3_PREFIX: str = os.getenv("S3_PREFIX", "ai-service/")
+    # AWS Textract — OCR for scanned PDFs and images (falls back to pdf-parse)
+    TEXTRACT_ENABLED: bool = os.getenv("TEXTRACT_ENABLED", "true").lower() in ("1", "true", "yes")
+    TEXTRACT_ROLE_ARN: str = os.getenv("TEXTRACT_ROLE_ARN", "")
+
+    # Backend integration — calls ZyncJobs Node backend for data
+    BACKEND_API_URL: str = os.getenv("BACKEND_API_URL", "http://localhost:5000")
+    BACKEND_TIMEOUT: int = int(os.getenv("BACKEND_TIMEOUT", "30"))
+
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"
     LOKI_URL: str = os.getenv("LOKI_URL", "http://localhost:3100")
@@ -125,6 +146,9 @@ class Settings(BaseSettings):
 
     RATE_LIMIT_REQUESTS: int = 100
     RATE_LIMIT_WINDOW_SECONDS: int = 60
+    RATE_LIMIT_ENABLED: bool = os.getenv("RATE_LIMIT_ENABLED", "true").lower() in ("1", "true", "yes")
+
+    CORS_ORIGINS: list = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,https://zyncjobs.com,https://app.zyncjobs.com").split(",")
 
     class Config:
         env_file = ".env"

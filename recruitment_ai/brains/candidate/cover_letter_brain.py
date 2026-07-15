@@ -1,13 +1,16 @@
-"""Cover Letter Brain — generates personalized cover letters from resume data."""
+"""Cover Letter Brain — full enterprise pipeline.
+Pipeline: BrainState.context_data → LLM → BrainResult
+"""
 import re
-from recruitment_ai.shared.brain import Brain, BrainState
-from recruitment_ai.shared.ollama_service import ollama_service
+import time
+from recruitment_ai.brains.base import Brain, BrainState, BrainResult
+from recruitment_ai.llm import llm_service
 
-SYSTEM = """You are a professional cover letter writer.
+COVER_LETTER_SYSTEM = """You are a professional cover letter writer.
 Write a compelling, personalized cover letter. Return ONLY the cover letter text.
 No labels, no JSON, no markdown, no explanation. Start directly with 'Dear Hiring Manager,'"""
 
-PROMPT = """Write a {tone} cover letter for {candidate_name} applying for {job_title} at {company}.
+COVER_LETTER_PROMPT = """Write a {tone} cover letter for {candidate_name} applying for {job_title} at {company}.
 
 Candidate Profile:
 - Summary: {summary}
@@ -29,42 +32,47 @@ class CoverLetterBrain(Brain):
     def __init__(self):
         super().__init__()
 
-    async def run(self, state: BrainState) -> BrainState:
-        context = state.context or {}
-        candidate_name = context.get("candidate_name", "the candidate")
-        job_title = context.get("job_title", "the position")
-        company = context.get("company", "your company")
-        tone = context.get("tone", "professional")
-        summary = context.get("summary", "")
-        experience = context.get("experience", "")
-        skills = context.get("skills", "")
+    async def run(self, state: BrainState) -> BrainResult:
+        start = time.perf_counter()
+        ctx = state.context_data
+        candidate_name = state.user.name or state.context.get("candidate_name", "the candidate")
+        job_title = ctx.job.title or state.context.get("job_title", "the position")
+        company = ctx.job.company_name or state.context.get("company", "your company")
+        tone = state.context.get("tone", "professional")
+        resume = ctx.resume
+        summary = str(resume.parsed)[:300] if resume.parsed else "Experienced professional"
+        experience_text = "\n".join(e.get("description", "") for e in resume.experience) if resume.experience else "Relevant work experience"
+        skills_text = ", ".join(resume.skills[:10]) if resume.skills else "Various technical skills"
 
-        prompt = PROMPT.format(
+        prompt = COVER_LETTER_PROMPT.format(
             candidate_name=candidate_name,
             job_title=job_title,
             company=company,
             tone=tone,
-            summary=summary[:300] if summary else "Experienced professional",
-            experience=experience[:300] if experience else "Relevant work experience",
-            skills=skills[:200] if skills else "Various technical skills",
+            summary=summary[:300],
+            experience=experience_text[:300],
+            skills=skills_text[:200],
         )
 
         try:
-            result = await ollama_service.generate(
+            result = await llm_service.generate(
                 brain_name="cover_letter",
                 prompt=prompt,
-                system=SYSTEM,
+                system=COVER_LETTER_SYSTEM,
                 temperature=0.4,
                 max_tokens=800,
             )
             result = re.sub(r"<think>.*?</think>", "", result, flags=re.DOTALL).strip()
             if not result.strip():
                 raise ValueError("Empty result")
-            state.result = {"cover_letter": result, "company": company, "job_title": job_title}
+            return BrainResult(
+                response={"cover_letter": result, "company": company, "job_title": job_title},
+                execution_time=time.perf_counter() - start,
+            )
         except Exception:
-            state.result = {"cover_letter": self._fallback(candidate_name, job_title, company, summary, experience, skills, tone)}
-
-        return state
+            return BrainResult(
+                response={"cover_letter": self._fallback(candidate_name, job_title, company, summary, experience_text, skills_text, tone)},
+            )
 
     def _fallback(self, name, job_title, company, summary, experience, skills, tone):
         greeting = "I am thrilled to apply" if tone == "enthusiastic" else "I am applying" if tone == "concise" else "I am writing to express my interest in applying"

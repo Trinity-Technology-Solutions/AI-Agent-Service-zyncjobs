@@ -1,0 +1,27 @@
+[Unit]
+Description=ZyncJobs AI Celery Beat — periodic task scheduler
+Documentation=https://zyncjobs.com/docs
+After=network.target redis.service
+Wants=redis.service
+
+[Service]
+Type=simple
+User=appuser
+Group=appuser
+WorkingDirectory=/opt/zyncjobs/ai-service
+EnvironmentFile=/opt/zyncjobs/ai-service/.env
+ExecStart=/opt/zyncjobs/ai-service/venv/bin/celery \
+    -A recruitment_ai.services.celery_app beat \
+    --loglevel=info \
+    --pidfile=/tmp/celerybeat.pid
+Restart=always
+RestartSec=10
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

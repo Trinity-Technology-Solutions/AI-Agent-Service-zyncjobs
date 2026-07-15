@@ -1,0 +1,11 @@
+venv
+.venv
+__pycache__
+*.pyc
+.git
+.gitignore
+*.md
+chroma_db
+recruitment_ai.db
+.env
+.env.*

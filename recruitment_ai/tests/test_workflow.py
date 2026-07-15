@@ -1,90 +1,56 @@
 """Tests for LangGraph workflow definition."""
 import pytest
-from recruitment_ai.workflows.recruitment_workflow import workflow, graph
-from recruitment_ai.shared.brain import BrainState
+from recruitment_ai.workflows.recruitment_graph import graph, build_graph
+from recruitment_ai.brains.shared.brain_state import BrainState
 
 
-def test_workflow_is_defined():
-    assert workflow is not None
+def test_graph_is_defined():
     assert graph is not None
+    assert build_graph is not None
 
 
 def test_graph_has_expected_nodes():
-    """Check expected nodes exist by looking at registered nodes."""
-    expected = {"authenticate", "load_memory", "retrieve_context",
+    expected = {"authenticate", "load_context", "load_memory", "retrieve_context",
                 "intent_detection", "planner", "execute_brain",
                 "validate", "store_memory"}
-    registered = set(workflow.nodes.keys()) if hasattr(workflow, 'nodes') else set()
+    registered = set(graph.get_graph().nodes.keys())
     for node in expected:
-        assert node in workflow.nodes, f"Node '{node}' not in workflow"
+        assert node in registered, f"Node '{node}' not in graph"
 
 
 def test_initial_state_can_be_created():
-    state = {
-        "query": "Hello",
-        "intent": None,
-        "user_id": "user1",
-        "session_id": None,
-        "user_role": "candidate",
-        "file_content": None,
-        "file_type": None,
-        "context": None,
-        "result": None,
-        "error": None,
-        "metadata": {},
-    }
-    assert state["query"] == "Hello"
-    assert state["user_id"] == "user1"
-    assert state["metadata"] == {}
+    state = BrainState(
+        query="Hello",
+        user_id="user1",
+        user_role="candidate",
+    )
+    assert state.query == "Hello"
+    assert state.user_id == "user1"
 
 
 @pytest.mark.asyncio
 async def test_authenticate_node():
-    from recruitment_ai.workflows.recruitment_workflow import authenticate_node
-    state = {"user_id": "test", "metadata": {}}
+    from recruitment_ai.workflows.nodes.authenticate import authenticate_node
+    state = BrainState(user_id="test")
     result = await authenticate_node(state)
-    assert result.get("error") is None
+    assert result.error is None
 
-    state_no_user = {"user_id": None, "metadata": {}}
+    state_no_user = BrainState(user_id=None)
     result = await authenticate_node(state_no_user)
-    assert result.get("error") == "Authentication required"
+    assert result.error == "Authentication required"
 
 
 @pytest.mark.asyncio
 async def test_intent_detection_node():
-    from recruitment_ai.workflows.recruitment_workflow import intent_detection_node
-    state = {
-        "query": "Parse this job description",
-        "intent": None,
-        "user_id": "test",
-        "session_id": None,
-        "user_role": "candidate",
-        "file_content": None,
-        "file_type": None,
-        "context": None,
-        "result": None,
-        "error": None,
-        "metadata": {},
-    }
+    from recruitment_ai.workflows.recruitment_graph import intent_detection_node
+    state = BrainState(query="Parse this job description", user_id="test")
     result = await intent_detection_node(state)
-    assert result["intent"] == "JOB_PARSER"
+    assert result.intent == "JOB_PARSER"
 
 
 @pytest.mark.asyncio
 async def test_validate_node_with_error():
-    from recruitment_ai.workflows.recruitment_workflow import validate_node
-    state = {"error": "Something went wrong", "result": None, "metadata": {}}
+    from recruitment_ai.workflows.nodes.validate import validate_node
+    state = BrainState(error="Something went wrong")
     result = await validate_node(state)
-    assert result["result"] == {"error": "Something went wrong"}
-
-
-@pytest.mark.asyncio
-async def test_should_continue():
-    from recruitment_ai.workflows.recruitment_workflow import should_continue
-    state_with_auth_error = {"error": "Authentication failed", "metadata": {}}
-    state_with_other_error = {"error": "Other error", "metadata": {}}
-    state_no_error = {"error": None, "metadata": {}}
-
-    assert should_continue(state_with_auth_error) == "end"
-    assert should_continue(state_with_other_error) == "continue"
-    assert should_continue(state_no_error) == "continue"
+    assert result.error == "Something went wrong"

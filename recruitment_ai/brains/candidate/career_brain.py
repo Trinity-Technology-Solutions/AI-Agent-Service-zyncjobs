@@ -1,28 +1,190 @@
-"""Career Brain - handles career advice, roadmap, skill gap, interview prep, resume builder."""
+"""Career Brain — full enterprise pipeline.
+All context pre-loaded by Context Manager into BrainState.
+"""
 import re
 import json
-from typing import Optional
-from recruitment_ai.shared.brain import Brain, BrainState
-from recruitment_ai.shared.ollama_service import ollama_service
+import time
+from recruitment_ai.brains.base import Brain, BrainState, BrainResult
+from recruitment_ai.llm import llm_service
+from recruitment_ai.validators.json_validator import validate_json_strict
+from recruitment_ai.prompts import get_prompt, get_system_prompt
 
-CAREER_SYSTEM = """You are an expert career advisor for tech professionals.
+CAREER_SYSTEM = get_system_prompt("career")
+CAREER_CHAT_SYSTEM_TPL = get_prompt("career_chat_system", user_context="{user_context}")
+INTERVIEW_SYSTEM = get_system_prompt("interview")
+RESUME_BUILDER_SYSTEM_TMPL = """You are a professional resume writer.
 Return ONLY valid JSON as specified. No extra text, no markdown, no explanation."""
+SKILL_ASSESSMENT_SYSTEM = """You are a technical interviewer generating MCQ questions.
+Return ONLY valid JSON. No markdown, no explanation, no code blocks."""
 
-CAREER_CHAT_SYSTEM = """You are ZyncJobs AI Career Mentor — an expert, personalized career advisor for the ZyncJobs platform.
-You already know the candidate's profile. Use it to give specific, data-driven advice.
-Never say generic things. Always refer to their actual skills, role, ATS score, and goals.
-NEVER mention other job sites (LinkedIn, Indeed, Glassdoor, Naukri, Monster, Shine, etc.).
-Direct candidates to ZyncJobs platform features only.
-Be direct, encouraging, and mentor-like. Use bullet points. Max 3-4 short paragraphs.
 
-Candidate Profile:
-{user_context}"""
+class CareerBrain(Brain):
+    def __init__(self):
+        super().__init__()
 
-INTERVIEW_SYSTEM = """You are an expert technical interviewer.
-Return ONLY valid JSON as specified. No extra text, no markdown, no explanation."""
+    async def run(self, state: BrainState) -> BrainResult:
+        start = time.perf_counter()
+        intent = state.intent or "CAREER_ADVICE"
+        query = state.request.query or state.query or ""
+        ctx = state.context_data
 
-RESUME_BUILDER_SYSTEM = """You are a professional resume writer.
-Return ONLY valid JSON as specified. No extra text, no markdown, no explanation."""
+        if intent == "SKILL_ASSESSMENT":
+            return await self._skill_assessment(state, ctx, start)
+        elif intent == "INTERVIEW_PREP":
+            return await self._interview_prep(state, ctx, start)
+        elif intent == "RESUME_BUILDER":
+            return await self._resume_builder(state, ctx, start)
+        elif intent == "CAREER_ADVICE":
+            if ctx.resume.skills or ctx.resume.parsed:
+                return await self._career_advice(state, ctx, start)
+            return await self._chat_advice(state, query, start)
+        else:
+            return await self._chat_advice(state, query, start)
+
+    def _build_user_context(self, state: BrainState) -> str:
+        parts = []
+        resume = state.context_data.resume
+        prefs = state.context_data.user_preferences
+        if resume.skills:
+            parts.append(f"Skills: {', '.join(resume.skills[:10])}")
+        if prefs.get("ats_score"):
+            parts.append(f"ATS Score: {prefs['ats_score']}%")
+        if prefs.get("experience_years"):
+            parts.append(f"Experience: {prefs['experience_years']}")
+        return "\n".join(parts) or "No profile data available."
+
+    async def _chat_advice(self, state: BrainState, query: str, start: float) -> BrainResult:
+        clean_query = re.sub(r'^career advice:\s*', '', query, flags=re.IGNORECASE).strip()
+        user_context = self._build_user_context(state)
+        rag = state.retrieved_documents.chunks or []
+        rag_text = "\n".join(c.get("text", "") for c in rag[:3]) if rag else ""
+        system = get_prompt("career_chat_system", user_context=user_context)
+        prompt = f"{clean_query}\n\nRelevant context:\n{rag_text}" if rag_text else clean_query
+        try:
+            reply = await llm_service.generate(
+                brain_name="career_advice", prompt=prompt, system=system,
+                temperature=0.4, max_tokens=600,
+            )
+            reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
+            return BrainResult(
+                response={"reply": reply, "intent": "CAREER_ADVICE", "rag_used": bool(rag_text)},
+                execution_time=time.perf_counter() - start,
+            )
+        except Exception:
+            return BrainResult(
+                response={"reply": "I'm having trouble right now. Please try again in a moment.", "intent": "CAREER_ADVICE"},
+            )
+
+    async def _career_advice(self, state: BrainState, ctx, start: float) -> BrainResult:
+        resume = ctx.resume
+        prefs = ctx.user_preferences
+        prompt = CAREER_ADVICE_PROMPT.format(
+            current_role=prefs.get("current_role", "Software Engineer"),
+            target_role=prefs.get("target_role", state.request.query or "Senior Software Engineer"),
+            current_skills=", ".join(resume.skills or ["Python", "JavaScript"]),
+            experience_years=prefs.get("experience_years", 3),
+            location=prefs.get("location", "Remote"),
+        )
+        try:
+            result = await llm_service.generate(
+                brain_name="career_advice", prompt=prompt, system=CAREER_SYSTEM,
+                temperature=0.3, max_tokens=2048,
+            )
+            parsed = validate_json_strict(result, "object") or {}
+            return BrainResult(response=parsed, execution_time=time.perf_counter() - start)
+        except Exception:
+            return BrainResult(
+                response=self._fallback_career_advice(prefs),
+                metadata={"fallback": True},
+            )
+
+    async def _skill_assessment(self, state: BrainState, ctx, start: float) -> BrainResult:
+        skill = ctx.user_preferences.get("skill", "Python")
+        prompt = SKILL_ASSESSMENT_PROMPT.format(
+            skill=skill,
+            level=ctx.user_preferences.get("level", "intermediate"),
+            count=ctx.user_preferences.get("count", 10),
+        )
+        try:
+            result = await llm_service.generate(
+                brain_name="skill_assessment", prompt=prompt, system=SKILL_ASSESSMENT_SYSTEM,
+                temperature=0.3, max_tokens=3000,
+            )
+            parsed = validate_json_strict(result, "object") or {}
+            questions = parsed.get("questions", [])
+            valid = [q for q in questions if (
+                q.get("question") and isinstance(q.get("options"), list)
+                and len(q["options"]) == 4 and isinstance(q.get("correctAnswer"), int)
+                and 0 <= q["correctAnswer"] <= 3
+            )]
+            if len(valid) < 5:
+                raise ValueError(f"Only {len(valid)} valid questions generated")
+            return BrainResult(
+                response={"questions": valid[:10]},
+                execution_time=time.perf_counter() - start,
+            )
+        except Exception as e:
+            return BrainResult(
+                response={"questions": [], "error": str(e)},
+                metadata={"fallback": True},
+            )
+
+    async def _interview_prep(self, state: BrainState, ctx, start: float) -> BrainResult:
+        resume = ctx.resume
+        prompt = INTERVIEW_PREP_PROMPT.format(
+            role=ctx.user_preferences.get("role", "Software Engineer"),
+            level=ctx.user_preferences.get("level", "mid"),
+            skills=", ".join(resume.skills or ["Python", "JavaScript"]),
+            interview_type=ctx.user_preferences.get("interview_type", "technical"),
+        )
+        try:
+            result = await llm_service.generate(
+                brain_name="interview_prep", prompt=prompt, system=INTERVIEW_SYSTEM,
+                temperature=0.3, max_tokens=2048,
+            )
+            parsed = validate_json_strict(result, "object") or {}
+            if not parsed:
+                raise ValueError("Empty result")
+            return BrainResult(response=parsed, execution_time=time.perf_counter() - start)
+        except Exception:
+            return BrainResult(
+                response={"questions": [], "topics_to_review": [], "tips": []},
+                metadata={"fallback": True},
+            )
+
+    async def _resume_builder(self, state: BrainState, ctx, start: float) -> BrainResult:
+        query = state.request.query or state.query or ""
+        if ctx.resume.parsed or ctx.resume.skills:
+            prompt = RESUME_BUILDER_PROMPT.format(
+                personal_info=json.dumps({"name": state.user.name}),
+                experience=json.dumps(ctx.resume.experience),
+                education=json.dumps(ctx.resume.education),
+                skills=json.dumps(ctx.resume.skills),
+                target_role=ctx.user_preferences.get("target_role", "Software Engineer"),
+            )
+        else:
+            prompt = f"""Generate resume content based on this description:\n\n{query}\n\nReturn JSON with:\n{{"summary": "...", "experience_bullets": [], "skills_formatted": {{}}, "ats_keywords": []}}"""
+        try:
+            result = await llm_service.generate(
+                brain_name="resume_builder", prompt=prompt, system=RESUME_BUILDER_SYSTEM_TMPL,
+                temperature=0.3, max_tokens=2048,
+            )
+            parsed = validate_json_strict(result, "object") or {}
+            if not parsed:
+                raise ValueError("Empty parse")
+            return BrainResult(response=parsed, execution_time=time.perf_counter() - start)
+        except Exception:
+            return BrainResult(
+                response={"summary": "", "experience_bullets": [], "skills_formatted": {}, "ats_keywords": []},
+            )
+
+    def _fallback_career_advice(self, prefs: dict) -> dict:
+        return {
+            "career_path": [{"step": 1, "title": "Learn " + prefs.get("target_role", "target role"), "skills_to_learn": [], "estimated_months": 12}],
+            "skill_gaps": ["Identify missing skills from job descriptions"],
+            "recommended_courses": [], "certifications": [], "timeline_months": 12,
+            "advice": "Focus on building projects that demonstrate target role skills.",
+        }
 
 
 CAREER_ADVICE_PROMPT = """Provide career advice for a candidate.
@@ -36,21 +198,14 @@ Location: {location}
 Return JSON with:
 {{
   "career_path": [
-    {{"step": 1, "title": "Junior Developer", "skills_to_learn": ["skill1"], "estimated_months": 6}},
-    {{"step": 2, "title": "Mid Developer", "skills_to_learn": ["skill2"], "estimated_months": 12}}
+    {{"step": 1, "title": "Junior Developer", "skills_to_learn": ["skill1"], "estimated_months": 6}}
   ],
-  "skill_gaps": ["gap1", "gap2", "gap3"],
-  "recommended_courses": [
-    {{"title": "Course Name", "platform": "Coursera|Udemy|edX", "url": ""}}
-  ],
-  "certifications": ["cert1", "cert2"],
+  "skill_gaps": ["gap1", "gap2"],
+  "recommended_courses": [{{"title": "Course", "platform": "Coursera", "url": ""}}],
+  "certifications": ["cert1"],
   "timeline_months": 18,
   "advice": "Brief actionable advice"
 }}"""
-
-
-SKILL_ASSESSMENT_SYSTEM = """You are a technical interviewer generating MCQ questions.
-Return ONLY valid JSON. No markdown, no explanation, no code blocks."""
 
 SKILL_ASSESSMENT_PROMPT = """Generate exactly {count} multiple choice questions about {skill} for a {level} level assessment.
 
@@ -58,37 +213,32 @@ Return ONLY this JSON structure:
 {{
   "questions": [
     {{
-      "question": "What does the 'let' keyword do in JavaScript?",
-      "options": ["Declares a block-scoped variable", "Declares a function", "Imports a module", "Creates a class"],
+      "question": "...",
+      "options": ["A", "B", "C", "D"],
       "correctAnswer": 0
     }}
   ]
 }}
 
 Rules:
-- EXACTLY {count} questions specifically about {skill}
-- Each question must have exactly 4 real, meaningful options (NOT placeholders like 'Option A' or 'A')
-- correctAnswer is the 0-based index (0, 1, 2, or 3) of the correct option
-- Questions must test real practical knowledge of {skill}
-- Return ONLY the JSON object, nothing else"""
-
+- EXACTLY {count} questions about {skill}
+- Each question must have exactly 4 real options
+- correctAnswer is 0-based index
+- Return ONLY the JSON object"""
 
 INTERVIEW_PREP_PROMPT = """Generate interview preparation for a role.
 
 Role: {role}
 Level: {level}
 Skills: {skills}
-Interview Type: {interview_type}  # technical|behavioral|hr|system_design
+Interview Type: {interview_type}
 
 Return JSON with:
 {{
-  "questions": [
-    {{"question": "...", "type": "technical|behavioral", "difficulty": "easy|medium|hard", "expected_answer": "..."}}
-  ],
-  "topics_to_review": ["topic1", "topic2"],
+  "questions": [{{"question": "...", "type": "technical|behavioral", "difficulty": "easy|medium|hard", "expected_answer": "..."}}],
+  "topics_to_review": ["topic1"],
   "tips": ["tip1", "tip2"]
 }}"""
-
 
 RESUME_BUILDER_PROMPT = """Generate resume content for a candidate.
 
@@ -101,212 +251,10 @@ Target Role: {target_role}
 Return JSON with:
 {{
   "summary": "Professional summary (3-4 lines)",
-  "experience_bullets": [
-    {{"company": "", "bullets": ["bullet1", "bullet2"]}}
-  ],
+  "experience_bullets": [{{"company": "", "bullets": ["bullet1"]}}],
   "skills_formatted": {{"technical": [], "soft": []}},
   "ats_keywords": ["keyword1", "keyword2"]
 }}"""
-
-
-class CareerBrain(Brain):
-    """Handles career-related features: advice, roadmap, skill gap, interview prep, resume builder."""
-
-    def __init__(self):
-        super().__init__()
-
-    async def run(self, state: BrainState) -> BrainState:
-        intent = state.intent or "CAREER_ADVICE"
-        context = state.context or {}
-        query = state.query or ""
-
-        if intent == "SKILL_ASSESSMENT":
-            return await self._skill_assessment(state, context)
-        elif intent == "INTERVIEW_PREP":
-            return await self._interview_prep(state, context)
-        elif intent == "RESUME_BUILDER":
-            return await self._resume_builder(state, context)
-        elif intent == "CAREER_ADVICE":
-            # Structured context (from generateCareerRoadmap) → generate roadmap
-            if context.get("current_role") and context.get("target_role"):
-                return await self._career_advice(state, context)
-            # Free-text chat → conversational reply
-            return await self._chat_advice(state, query)
-        else:
-            return await self._chat_advice(state, query)
-
-    async def _chat_advice(self, state: BrainState, query: str) -> BrainState:
-        """Handle free-text career questions conversationally with user context."""
-        clean_query = re.sub(r'^career advice:\s*', '', query, flags=re.IGNORECASE).strip()
-        context = state.context or {}
-        # Build user context string from injected profile data
-        user_ctx_parts = []
-        if context.get("user_name"): user_ctx_parts.append(f"Name: {context['user_name']}")
-        if context.get("current_role"): user_ctx_parts.append(f"Current Role: {context['current_role']}")
-        if context.get("target_role"): user_ctx_parts.append(f"Target Role: {context['target_role']}")
-        if context.get("skills"): user_ctx_parts.append(f"Skills: {', '.join(context['skills'][:10])}")
-        if context.get("ats_score"): user_ctx_parts.append(f"ATS Score: {context['ats_score']}%")
-        if context.get("experience_years"): user_ctx_parts.append(f"Experience: {context['experience_years']}")
-        if context.get("applications_count"): user_ctx_parts.append(f"Applications sent: {context['applications_count']}")
-        if context.get("missing_skills"): user_ctx_parts.append(f"Missing skills: {', '.join(context['missing_skills'][:5])}")
-        user_context = "\n".join(user_ctx_parts) if user_ctx_parts else "No profile data available."
-        system = CAREER_CHAT_SYSTEM.format(user_context=user_context)
-        # Inject RAG context if available
-        rag_docs = context.get("rag_context", [])
-        rag_text = "\n".join(d["text"] for d in rag_docs[:3]) if rag_docs else ""
-        prompt = f"{clean_query}\n\nRelevant context:\n{rag_text}" if rag_text else clean_query
-        try:
-            reply = await ollama_service.generate(
-                brain_name="career_advice",
-                prompt=prompt,
-                system=system,
-                temperature=0.4,
-                max_tokens=600,
-            )
-            reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
-            state.result = {"reply": reply, "intent": "CAREER_ADVICE", "rag_used": bool(rag_text)}
-        except Exception:
-            state.result = {"reply": "I'm having trouble right now. Please try again in a moment.", "intent": "CAREER_ADVICE"}
-        return state
-
-    async def _career_advice(self, state: BrainState, context: dict) -> BrainState:
-        prompt = CAREER_ADVICE_PROMPT.format(
-            current_role=context.get("current_role", "Software Engineer"),
-            target_role=context.get("target_role", "Senior Software Engineer"),
-            current_skills=", ".join(context.get("current_skills", ["Python", "JavaScript"])),
-            experience_years=context.get("experience_years", 3),
-            location=context.get("location", "Remote"),
-        )
-        try:
-            result = await ollama_service.generate(
-                brain_name="career_advice",
-                prompt=prompt,
-                system=CAREER_SYSTEM,
-                temperature=0.3,
-                max_tokens=2048,
-            )
-            state.result = self._parse_json(result)
-        except Exception:
-            state.result = self._fallback_career_advice(context)
-            state.metadata["fallback"] = True
-        return state
-
-    async def _skill_assessment(self, state: BrainState, context: dict) -> BrainState:
-        skill = context.get("skill", "Python")
-        prompt = SKILL_ASSESSMENT_PROMPT.format(
-            skill=skill,
-            level=context.get("level", "intermediate"),
-            count=context.get("count", 10),
-        )
-        try:
-            result = await ollama_service.generate(
-                brain_name="skill_assessment",
-                prompt=prompt,
-                system=SKILL_ASSESSMENT_SYSTEM,
-                temperature=0.3,
-                max_tokens=3000,
-            )
-            parsed = self._parse_json(result)
-            questions = parsed.get("questions", []) if parsed else []
-            # Validate: filter out placeholder options and wrong types
-            valid = [
-                q for q in questions
-                if q.get("question") and
-                isinstance(q.get("options"), list) and len(q["options"]) == 4 and
-                isinstance(q.get("correctAnswer"), int) and 0 <= q["correctAnswer"] <= 3 and
-                not any(o.strip() in ("A", "B", "C", "D") for o in q["options"])
-            ]
-            if len(valid) < 5:
-                raise ValueError(f"Only {len(valid)} valid questions generated")
-            state.result = {"questions": valid[:10]}
-        except Exception as e:
-            state.result = {"questions": [], "error": str(e)}
-            state.metadata["fallback"] = True
-        return state
-
-    async def _interview_prep(self, state: BrainState, context: dict) -> BrainState:
-        prompt = INTERVIEW_PREP_PROMPT.format(
-            role=context.get("role", "Software Engineer"),
-            level=context.get("level", "mid"),
-            skills=", ".join(context.get("skills", ["Python", "JavaScript"])),
-            interview_type=context.get("interview_type", "technical"),
-        )
-        try:
-            result = await ollama_service.generate(
-                brain_name="interview_prep",
-                prompt=prompt,
-                system=INTERVIEW_SYSTEM,
-                temperature=0.3,
-                max_tokens=2048,
-            )
-            state.result = self._parse_json(result)
-            if not state.result:
-                raise ValueError("Empty result")
-        except Exception:
-            state.result = {"questions": [], "topics_to_review": [], "tips": []}
-            state.metadata["fallback"] = True
-        return state
-
-    async def _resume_builder(self, state: BrainState, context: dict) -> BrainState:
-        # If structured context provided, use template; otherwise use free-text query
-        if context.get("personal_info") or context.get("experience") or context.get("skills"):
-            prompt = RESUME_BUILDER_PROMPT.format(
-                personal_info=json.dumps(context.get("personal_info", {})),
-                experience=json.dumps(context.get("experience", [])),
-                education=json.dumps(context.get("education", [])),
-                skills=json.dumps(context.get("skills", {})),
-                target_role=context.get("target_role", "Software Engineer"),
-            )
-        else:
-            prompt = f"""Generate resume content based on this description:
-
-{state.query}
-
-Return JSON with:
-{{
-  "summary": "Professional summary (3-4 lines)",
-  "experience_bullets": [
-    {{"company": "", "bullets": ["bullet1", "bullet2"]}}
-  ],
-  "skills_formatted": {{"technical": [], "soft": []}},
-  "ats_keywords": ["keyword1", "keyword2"]
-}}"""
-        try:
-            result = await ollama_service.generate(
-                brain_name="resume_builder",
-                prompt=prompt,
-                system=RESUME_BUILDER_SYSTEM,
-                temperature=0.3,
-                max_tokens=2048,
-            )
-            state.result = self._parse_json(result)
-            if not state.result:
-                raise ValueError("Empty parse")
-        except Exception:
-            state.result = {"summary": "", "experience_bullets": [], "skills_formatted": {}, "ats_keywords": []}
-        return state
-
-    def _parse_json(self, text: str) -> dict:
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
-        return {}
-
-    def _fallback_career_advice(self, context: dict) -> dict:
-        return {
-            "career_path": [
-                {"step": 1, "title": "Learn " + context.get("target_role", "target role"), "skills_to_learn": context.get("current_skills", []), "estimated_months": 12}
-            ],
-            "skill_gaps": ["Identify missing skills from job descriptions"],
-            "recommended_courses": [],
-            "certifications": [],
-            "timeline_months": 12,
-            "advice": "Focus on building projects that demonstrate target role skills.",
-        }
 
 
 career_brain = CareerBrain()

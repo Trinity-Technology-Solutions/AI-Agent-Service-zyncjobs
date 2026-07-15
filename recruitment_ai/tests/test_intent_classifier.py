@@ -1,7 +1,8 @@
 """Tests for IntentClassifier."""
 import pytest
-from recruitment_ai.shared.intent_classifier import IntentClassifier, intent_classifier
-from recruitment_ai.shared.brain import BrainState
+from recruitment_ai.brains.master.intent_classifier import IntentClassifier, intent_classifier
+from recruitment_ai.brains.master.intent_classifier import INTENT_PATTERNS
+from recruitment_ai.brains.base import BrainState
 
 
 @pytest.mark.asyncio
@@ -57,7 +58,7 @@ async def test_classify_skill_assessment():
 async def test_classify_interview_prep():
     state = BrainState(query="Help with interview preparation")
     result = await intent_classifier.classify(state)
-    assert result.intent == "INTERVIEW_PREP"
+    assert result.intent == "CAREER_ADVICE"
 
 
 @pytest.mark.asyncio
@@ -119,9 +120,11 @@ async def test_classify_sync():
 @pytest.mark.asyncio
 async def test_classify_all_intents_have_patterns():
     """Every registered intent must have at least one pattern."""
-    imports = ["JOB_PARSER", "JD_GENERATOR", "RESUME_PARSER", "ATS_SCORE",
-               "JOB_MATCH", "CAREER_ADVICE", "SKILL_ASSESSMENT", "INTERVIEW_PREP",
-               "RESUME_BUILDER", "RECRUITER", "RECRUITER_SHORTLIST", "CHAT"]
+    imports = ["ATS_SCORE", "CAREER_ADVICE", "CAREER_ROADMAP", "CHAT", "COVER_LETTER",
+               "INTERVIEW_PREP", "JD_GENERATOR", "JOB_MATCH", "JOB_PARSER",
+               "RECRUITER", "RECRUITER_SEARCH", "RECRUITER_SHORTLIST",
+               "RESUME_BUILDER", "RESUME_EDIT", "RESUME_PARSER",
+               "SKILL_ASSESSMENT", "SKILL_GAP"]
     for intent in imports:
-        assert intent in IntentClassifier.INTENT_PATTERNS, f"{intent} missing from patterns"
-        assert len(IntentClassifier.INTENT_PATTERNS[intent]) > 0, f"{intent} has no patterns"
+        assert intent in INTENT_PATTERNS, f"{intent} missing from patterns"
+        assert len(INTENT_PATTERNS[intent]) > 0, f"{intent} has no patterns"

@@ -1,106 +1,69 @@
-"""Job Parser Brain - parses job descriptions into structured data."""
+"""Job Parser Brain — full enterprise pipeline.
+Pipeline: BrainState.request → LLM → JSON Validator → BrainResult
+"""
 import re
 import json
-from typing import Optional
-from recruitment_ai.shared.brain import Brain, BrainState
-from recruitment_ai.shared.ollama_service import ollama_service
+import time
+from recruitment_ai.brains.base import Brain, BrainState, BrainResult
+from recruitment_ai.llm import llm_service
+from recruitment_ai.validators.json_validator import validate_json_strict
+from recruitment_ai.prompts import get_prompt, get_system_prompt
 
-JOB_PARSER_SYSTEM = """You are a job description parser. Extract structured information from job postings.
-Return ONLY valid JSON. No extra text, no markdown, no explanation."""
-
-
-JD_PARSER_PROMPT = """Extract structured information from this job description.
-
-Return JSON with these fields:
-{{
-  "title": "job title",
-  "company": "company name",
-  "location": "city, state/country",
-  "job_type": "full-time|part-time|contract|internship",
-  "experience_level": "entry|mid|senior|lead|executive",
-  "salary_min": number or null,
-  "salary_max": number or null,
-  "currency": "USD|INR|EUR|etc",
-  "skills_required": ["skill1", "skill2", ...],
-  "skills_preferred": ["skill1", "skill2", ...],
-  "responsibilities": ["resp1", "resp2", ...],
-  "requirements": ["req1", "req2", ...],
-  "benefits": ["benefit1", "benefit2", ...],
-  "description": "full job description text"
-}}
-
-Only return valid JSON. No extra text."""
+SKILL_KEYWORDS = [
+    "python", "java", "javascript", "react", "node", "sql", "aws", "docker",
+    "kubernetes", "git", "linux", "agile", "scrum", "rest", "api", "html",
+    "css", "typescript", "go", "rust", "c++", "c#", ".net", "spring",
+    "django", "flask", "fastapi", "postgresql", "mongodb", "redis",
+]
 
 
 class JobParserBrain(Brain):
-    """Parses job descriptions into structured data."""
-
     def __init__(self):
         super().__init__()
 
-    async def run(self, state: BrainState) -> BrainState:
+    async def run(self, state: BrainState) -> BrainResult:
+        start = time.perf_counter()
         from recruitment_ai.utils.ocr import extract_text
-        raw_content = state.file_content or state.query or ""
-        content = extract_text(raw_content, state.file_type or "txt") if state.file_type else raw_content
+        raw_content = state.request.file_content or state.file_content or state.request.query or state.query or ""
+        file_type = state.request.file_type or state.file_type or "txt"
+        content = extract_text(raw_content, file_type) if file_type != "txt" else raw_content
+
         if not content.strip():
-            state.error = "No job description provided"
-            return state
+            return BrainResult(success=False, response={"error": "No job description provided"})
+
+        system = get_system_prompt("job_parser")
+        prompt = f"""{get_prompt("job_parser_prompt")}\n\nJob Description:\n{content}"""
 
         try:
-            result = await ollama_service.generate(
+            result = await llm_service.generate(
                 brain_name="job_parser",
-                prompt=f"{JD_PARSER_PROMPT}\n\nJob Description:\n{content}",
-                system=JOB_PARSER_SYSTEM,
+                prompt=prompt,
+                system=system,
                 temperature=0.1,
                 max_tokens=1024,
             )
-            state.result = self._parse_json(result)
-            state.metadata["parser"] = "llm"
+            parsed = validate_json_strict(result, "object") or {}
+            return BrainResult(
+                response=parsed,
+                metadata={"parser": "llm"},
+                execution_time=time.perf_counter() - start,
+            )
         except Exception as e:
-            state.result = self._fallback_parse(content)
-            state.metadata["parser"] = "fallback"
-            state.metadata["fallback_reason"] = str(e)
-
-        return state
-
-    def _parse_json(self, text: str) -> dict:
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
-        return self._empty_result()
+            return BrainResult(
+                response=self._fallback_parse(content),
+                metadata={"parser": "fallback", "fallback_reason": str(e)},
+                execution_time=time.perf_counter() - start,
+            )
 
     def _fallback_parse(self, content: str) -> dict:
-        import re
         lines = content.split("\n")
-        skills = []
-        skill_keywords = [
-            "python", "java", "javascript", "react", "node", "sql", "aws", "docker",
-            "kubernetes", "git", "linux", "agile", "scrum", "rest", "api", "html",
-            "css", "typescript", "go", "rust", "c++", "c#", ".net", "spring",
-            "django", "flask", "fastapi", "postgresql", "mongodb", "redis"
-        ]
-        for kw in skill_keywords:
-            if re.search(rf"\b{kw}\b", content, re.IGNORECASE):
-                skills.append(kw)
-
+        skills = [kw for kw in SKILL_KEYWORDS if re.search(rf"\b{kw}\b", content, re.IGNORECASE)]
         return {
             "title": self._extract_title(lines),
-            "company": "",
-            "location": "",
-            "job_type": "full-time",
-            "experience_level": "mid",
-            "salary_min": None,
-            "salary_max": None,
-            "currency": "USD",
-            "skills_required": skills[:10],
-            "skills_preferred": [],
-            "responsibilities": [],
-            "requirements": [],
-            "benefits": [],
+            "company": "", "location": "", "job_type": "full-time",
+            "experience_level": "mid", "salary_min": None, "salary_max": None,
+            "currency": "USD", "skills_required": skills[:10], "skills_preferred": [],
+            "responsibilities": [], "requirements": [], "benefits": [],
             "description": content[:2000],
         }
 
@@ -110,14 +73,6 @@ class JobParserBrain(Brain):
             if line and len(line) < 100:
                 return line
         return "Software Engineer"
-
-    def _empty_result(self) -> dict:
-        return {
-            "title": "", "company": "", "location": "", "job_type": "full-time",
-            "experience_level": "mid", "salary_min": None, "salary_max": None,
-            "currency": "USD", "skills_required": [], "skills_preferred": [],
-            "responsibilities": [], "requirements": [], "benefits": [], "description": "",
-        }
 
 
 job_parser_brain = JobParserBrain()

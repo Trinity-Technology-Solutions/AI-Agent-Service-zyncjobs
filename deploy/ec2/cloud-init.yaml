@@ -1,0 +1,110 @@
+﻿#cloud-config
+# ZyncJobs AI Service — EC2 cloud-init auto-provisioning
+# Launch with: aws ec2 run-instances --user-data file://cloud-init.yaml ...
+---
+package_update: true
+package_upgrade: true
+
+packages:
+  - curl
+  - wget
+  - git
+  - nginx
+  - certbot
+  - python3-certbot-nginx
+  - python3
+  - python3-pip
+  - python3-venv
+  - build-essential
+  - htop
+
+runcmd:
+  # Ollama installation
+  - curl -fsSL https://ollama.com/install.sh | sh
+  - systemctl enable ollama
+  - systemctl start ollama
+  - mkdir -p /etc/systemd/system/ollama.service.d
+  - |
+    cat > /etc/systemd/system/ollama.service.d/override.conf << OLLAMA_EOF
+    [Service]
+    Environment="OLLAMA_HOST=127.0.0.1:11434"
+    Environment="OLLAMA_KEEP_ALIVE=24h"
+    OLLAMA_EOF
+  - systemctl daemon-reload
+  - systemctl restart ollama
+  - sleep 5
+
+  # Download models
+  - ollama pull qwen2.5 || true
+  - ollama pull nomic-embed-text || true
+
+  # Clone repo
+  - mkdir -p /opt/ai-platform
+  - git clone https://github.com/zyncjobs/ai-service.git /opt/ai-platform/app || true
+
+  # Python venv
+  - python3 -m venv /opt/ai-platform/venv
+  - /opt/ai-platform/venv/bin/pip install --upgrade pip
+  - /opt/ai-platform/venv/bin/pip install fastapi uvicorn langgraph pydantic redis qdrant-client psycopg2-binary python-dotenv httpx orjson celery aioboto3 weasyprint jinja2
+
+  # Environment
+  - |
+    cat > /opt/ai-platform/.env << ENV_EOF
+    LLM_PROVIDER=ollama
+    OLLAMA_BASE_URL=http://127.0.0.1:11434
+    OLLAMA_DEFAULT_MODEL=qwen2.5
+    BACKEND_API_URL=http://localhost:5000
+    ENVIRONMENT=production
+    RATE_LIMIT_ENABLED=true
+    CORS_ORIGINS=https://www.zyncjobs.com,https://zyncjobs.com,https://api.zyncjobs.com
+    LOG_LEVEL=info
+    ENV_EOF
+
+  # Systemd service
+  - |
+    cat > /etc/systemd/system/zyncjobs-ai.service << SERVICE_EOF
+    [Unit]
+    Description=ZyncJobs AI Service
+    After=network.target ollama.service
+    Wants=ollama.service
+    [Service]
+    Type=simple
+    User=root
+    WorkingDirectory=/opt/ai-platform/app
+    Environment="PATH=/opt/ai-platform/venv/bin"
+    ExecStart=/opt/ai-platform/venv/bin/uvicorn recruitment_ai.api.main:app --host 0.0.0.0 --port 8001 --workers 4
+    Restart=always
+    RestartSec=5
+    [Install]
+    WantedBy=multi-user.target
+    SERVICE_EOF
+  - systemctl daemon-reload
+  - systemctl enable zyncjobs-ai
+  - systemctl start zyncjobs-ai
+
+  # Nginx
+  - |
+    cat > /etc/nginx/sites-available/ai-platform << NGINX_EOF
+    server {
+        listen 80;
+        server_name _;
+        client_max_body_size 50M;
+        location / {
+            proxy_pass http://127.0.0.1:8001;
+            proxy_http_version 1.1;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_read_timeout 300s;
+        }
+        location /health { proxy_pass http://127.0.0.1:8001/health; }
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header Strict-Transport-Security "max-age=31536000" always;
+    }
+    NGINX_EOF
+  - ln -sf /etc/nginx/sites-available/ai-platform /etc/nginx/sites-enabled/
+  - rm -f /etc/nginx/sites-enabled/default
+  - nginx -t && systemctl restart nginx
+
+final_message: "ZyncJobs AI Service deployed on $(date)"
+output: { all: "| tee -a /var/log/cloud-init-output.log" }

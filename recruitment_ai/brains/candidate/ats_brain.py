@@ -1,101 +1,73 @@
-"""ATS Brain - calculates ATS score for resumes against job descriptions."""
+"""ATS Brain — full enterprise pipeline.
+Pipeline: BrainState.context_data (resume + job) → LLM → JSON Validator → BrainResult
+"""
 import re
 import json
-from recruitment_ai.shared.brain import Brain, BrainState
-from recruitment_ai.shared.ollama_service import ollama_service
+import time
+from recruitment_ai.brains.base import Brain, BrainState, BrainResult
+from recruitment_ai.llm import llm_service
+from recruitment_ai.validators.json_validator import validate_json_strict
+from recruitment_ai.prompts import get_prompt, get_system_prompt
 
-ATS_SYSTEM = """You are an ATS (Applicant Tracking System) analyzer.
-Analyze resumes against job descriptions and return ONLY valid JSON. No extra text, no markdown, no explanation."""
-
-
-ATS_PROMPT = """Analyze this resume against the job description and return ATS score.
-
-Resume:
-{resume}
-
-Job Description:
-{job_description}
-
-Return JSON with:
-{{
-  "ats_score": 0-100,
-  "keyword_match": {{
-    "matched": ["skill1", "skill2"],
-    "missing": ["skill3", "skill4"],
-    "match_percentage": 0-100
-  }},
-  "formatting_score": 0-100,
-  "section_completeness": 0-100,
-  "experience_relevance": 0-100,
-  "suggestions": ["Add missing skill: X", "Use standard headings", "Quantify achievements"],
-  "passes_ats": true/false
-}}
-
-Only return valid JSON."""
+SKILL_KEYWORDS = [
+    "python", "java", "javascript", "react", "node", "sql", "aws", "docker",
+    "kubernetes", "git", "linux", "agile", "scrum", "rest", "api", "html",
+    "css", "typescript", "go", "rust", "c++", "c#", ".net", "spring",
+    "django", "flask", "fastapi", "postgresql", "mongodb", "redis",
+]
 
 
 class ATSBrain(Brain):
     def __init__(self):
         super().__init__()
 
-    async def run(self, state: BrainState) -> BrainState:
-        context = state.context or {}
-        resume = context.get("resume", state.query or "")
-        job_description = context.get("job_description", "")
+    async def run(self, state: BrainState) -> BrainResult:
+        start = time.perf_counter()
+        resume = state.context_data.resume.parsed or state.context.get("resume") or state.request.query or state.query or ""
+        job_description = state.context_data.job.description or state.context.get("job_description", "")
 
-        if not resume.strip():
-            state.error = "No resume provided"
-            return state
+        resume_text = json.dumps(resume) if isinstance(resume, dict) else str(resume)
+        if not resume_text.strip():
+            return BrainResult(success=False, response={"error": "No resume provided"})
 
-        prompt = ATS_PROMPT.format(resume=resume[:3000], job_description=job_description[:3000])
+        prompt = get_prompt("ats_prompt", resume=resume_text[:3000], job_description=job_description[:3000])
+        system = get_system_prompt("ats")
 
         try:
-            result = await ollama_service.generate(
+            result = await llm_service.generate(
                 brain_name="ats_scanner",
                 prompt=prompt,
-                system=ATS_SYSTEM,
+                system=system,
                 temperature=0.1,
                 max_tokens=512,
             )
-            state.result = self._parse_json(result)
-            state.metadata["model"] = "qwen3:8b"
+            parsed = validate_json_strict(result, "object") or {}
+            return BrainResult(
+                response=parsed,
+                metadata={"model": "llm"},
+                execution_time=time.perf_counter() - start,
+            )
         except Exception as e:
-            state.result = self._rule_based_ats(resume, job_description)
-            state.metadata["model"] = "rule_based"
-            state.metadata["fallback_reason"] = str(e)
-
-        return state
-
-    def _parse_json(self, text: str) -> dict:
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
-        return self._empty_result()
+            return BrainResult(
+                response=self._rule_based_ats(resume_text, job_description),
+                metadata={"model": "rule_based", "fallback_reason": str(e)},
+                warnings=["LLM analysis failed, used rule-based fallback"],
+                execution_time=time.perf_counter() - start,
+            )
 
     def _rule_based_ats(self, resume: str, jd: str) -> dict:
         resume_lower = resume.lower()
         jd_lower = jd.lower()
-
-        skills = ["python", "java", "javascript", "react", "node", "sql", "aws", "docker", "kubernetes", "git", "linux", "agile", "scrum", "rest", "api", "html", "css", "typescript", "go", "rust", "c++", "c#", ".net", "spring", "django", "flask", "fastapi", "postgresql", "mongodb", "redis"]
-        
-        jd_skills = set(re.findall(rf"\b({'|'.join(skills)})\b", jd_lower))
-        resume_skills = set(re.findall(rf"\b({'|'.join(skills)})\b", resume_lower))
-
+        jd_skills = set(re.findall(rf"\b({'|'.join(SKILL_KEYWORDS)})\b", jd_lower))
+        resume_skills = set(re.findall(rf"\b({'|'.join(SKILL_KEYWORDS)})\b", resume_lower))
         matched = list(jd_skills & resume_skills)
         missing = list(jd_skills - resume_skills)
         match_pct = int(len(matched) / len(jd_skills) * 100) if jd_skills else 100
-
         has_sections = all(s in resume_lower for s in ["experience", "education", "skills"])
         formatting = 80 if has_sections else 50
         completeness = 90 if len(resume) > 1000 else 60
         exp_relevance = 70 if matched else 30
-
         ats_score = int(match_pct * 0.4 + formatting * 0.2 + completeness * 0.2 + exp_relevance * 0.2)
-
         suggestions = []
         if missing:
             suggestions.append(f"Add missing keywords: {', '.join(missing[:5])}")
@@ -104,7 +76,6 @@ class ATSBrain(Brain):
         if len(resume) < 1000:
             suggestions.append("Expand resume with more details")
         suggestions.append("Quantify achievements with numbers and percentages")
-
         return {
             "ats_score": ats_score,
             "keyword_match": {"matched": matched, "missing": missing, "match_percentage": match_pct},
@@ -113,17 +84,6 @@ class ATSBrain(Brain):
             "experience_relevance": exp_relevance,
             "suggestions": suggestions,
             "passes_ats": ats_score >= 70,
-        }
-
-    def _empty_result(self) -> dict:
-        return {
-            "ats_score": 0,
-            "keyword_match": {"matched": [], "missing": [], "match_percentage": 0},
-            "formatting_score": 0,
-            "section_completeness": 0,
-            "experience_relevance": 0,
-            "suggestions": ["Provide resume and job description"],
-            "passes_ats": False,
         }
 
 

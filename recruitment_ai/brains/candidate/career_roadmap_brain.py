@@ -1,8 +1,12 @@
-"""Career Roadmap Brain - dedicated brain for career roadmap generation (architecture doc section 11)."""
+"""Career Roadmap Brain — full enterprise pipeline.
+Pipeline: BrainState.context_data → LLM → JSON Validator → BrainResult
+"""
 import re
 import json
-from recruitment_ai.shared.brain import Brain, BrainState
-from recruitment_ai.shared.ollama_service import ollama_service
+import time
+from recruitment_ai.brains.base import Brain, BrainState, BrainResult
+from recruitment_ai.llm import llm_service
+from recruitment_ai.validators.json_validator import validate_json_strict
 
 ROADMAP_SYSTEM = """You are an expert career roadmap planner.
 Return ONLY valid JSON as specified. No extra text, no markdown, no explanation."""
@@ -37,67 +41,58 @@ Return JSON with:
 
 
 class CareerRoadmapBrain(Brain):
-    """Dedicated career roadmap brain — Llama3.1:8b + Skill Gap + Market Trends."""
-
     def __init__(self):
         super().__init__()
 
-    async def run(self, state: BrainState) -> BrainState:
-        context = state.context or {}
+    async def run(self, state: BrainState) -> BrainResult:
+        start = time.perf_counter()
+        ctx = state.context_data
+        prefs = ctx.user_preferences
+        resume = ctx.resume
+
         prompt = ROADMAP_PROMPT.format(
-            current_role=context.get("current_role", "Software Engineer"),
-            target_role=context.get("target_role", state.query or "Senior Software Engineer"),
-            current_skills=", ".join(context.get("current_skills", [])) or "Not specified",
-            experience_years=context.get("experience_years", 0),
-            location=context.get("location", "Remote"),
+            current_role=prefs.get("current_role", "Software Engineer"),
+            target_role=prefs.get("target_role", state.request.query or "Senior Software Engineer"),
+            current_skills=", ".join(resume.skills or prefs.get("current_skills", [])) or "Not specified",
+            experience_years=prefs.get("experience_years", 0),
+            location=prefs.get("location", "Remote"),
         )
+
         try:
-            rag_docs = context.get("rag_context", [])
-            rag_text = "\n".join(d["text"] for d in rag_docs[:2]) if rag_docs else ""
+            rag_docs = state.retrieved_documents.chunks or state.context.get("rag_context", [])
+            rag_text = "\n".join(d.get("text", "") for d in rag_docs[:2]) if rag_docs else ""
             full_prompt = f"{prompt}\n\nAdditional context:\n{rag_text}" if rag_text else prompt
-            result = await ollama_service.generate(
-                brain_name="career_advice",  # llama3.1:8b per architecture Brain-to-Model table
+            result = await llm_service.generate(
+                brain_name="career_advice",
                 prompt=full_prompt,
                 system=ROADMAP_SYSTEM,
                 temperature=0.3,
                 max_tokens=2048,
             )
-            parsed = self._parse_json(result)
-            state.result = parsed if parsed else self._fallback(context)
-            state.metadata["rag_used"] = bool(rag_text)
+            parsed = validate_json_strict(result, "object") or {}
+            return BrainResult(
+                response=parsed if parsed else self._fallback(prefs),
+                metadata={"rag_used": bool(rag_text)},
+                execution_time=time.perf_counter() - start,
+            )
         except Exception as e:
-            state.result = self._fallback(context)
-            state.metadata["fallback_reason"] = str(e)
-        return state
+            return BrainResult(
+                response=self._fallback(prefs),
+                metadata={"fallback_reason": str(e)},
+            )
 
-    def _parse_json(self, text: str) -> dict:
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
-        return {}
-
-    def _fallback(self, context: dict) -> dict:
-        target = context.get("target_role", "target role")
+    def _fallback(self, prefs: dict) -> dict:
+        target = prefs.get("target_role", "target role")
         return {
-            "roadmap": [
-                {
-                    "phase": 1,
-                    "title": f"Foundation for {target}",
-                    "duration_months": 6,
-                    "goals": ["Build core skills", "Complete relevant projects"],
-                    "skills_to_learn": [],
-                    "milestones": ["First project completed"],
-                    "resources": [],
-                }
-            ],
-            "total_duration_months": 12,
-            "certifications": [],
-            "salary_progression": [],
-            "market_trends": [],
+            "roadmap": [{
+                "phase": 1,
+                "title": f"Foundation for {target}",
+                "duration_months": 6,
+                "goals": ["Build core skills", "Complete relevant projects"],
+                "skills_to_learn": [], "milestones": ["First project completed"], "resources": [],
+            }],
+            "total_duration_months": 12, "certifications": [],
+            "salary_progression": [], "market_trends": [],
             "advice": f"Focus on building practical experience for {target}.",
         }
 

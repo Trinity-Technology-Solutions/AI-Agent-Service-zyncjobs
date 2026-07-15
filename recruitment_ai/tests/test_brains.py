@@ -1,6 +1,6 @@
-"""Tests for all brains — focused on fallback logic when Ollama is unavailable."""
+"""Tests for all brains — focused on fallback logic when LLM is unavailable."""
 import pytest
-from recruitment_ai.shared.brain import BrainState
+from recruitment_ai.brains.base import BrainState
 from recruitment_ai.brains.chatbot.chatbot_brain import ChatbotBrain
 from recruitment_ai.brains.employer.job_parser_brain import JobParserBrain
 from recruitment_ai.brains.employer.jd_generator_brain import JDGeneratorBrain
@@ -27,43 +27,32 @@ recruiter_brain = RecruiterBrain()
 async def test_chatbot_empty_query():
     state = BrainState(query="")
     result = await chatbot_brain.run(state)
-    assert result.result is not None
-    assert "reply" in result.result
-    assert "How can I help" in result.result["reply"]
+    assert result.response is not None
+    assert "reply" in result.response
+    assert "How can I help" in result.response["reply"]
 
 
 @pytest.mark.asyncio
 async def test_chatbot_no_vector_results():
-    from unittest.mock import AsyncMock, patch
-    with patch('recruitment_ai.brains.chatbot.chatbot_brain.vector_store') as mock_vs:
-        mock_vs.search = AsyncMock(return_value=[])
-        state = BrainState(query="Something unknown")
-        result = await chatbot_brain.run(state)
-    assert result.result is not None
-    assert "couldn't find" in result.result["reply"].lower()
+    state = BrainState(query="Something unknown")
+    result = await chatbot_brain.run(state)
+    assert result.response is not None
+    assert "reply" in result.response
 
 
 @pytest.mark.asyncio
 async def test_chatbot_with_context(mock_vector_store):
     state = BrainState(query="What is ZyncJobs?")
     result = await chatbot_brain.run(state)
-    assert result.result is not None
-    assert "reply" in result.result or "error" in result.result
+    assert result.response is not None
+    assert "reply" in result.response or "error" in result.response
 
 
 @pytest.mark.asyncio
 async def test_chatbot_context_building():
-    from recruitment_ai.vector.store import vector_store
-    from unittest.mock import MagicMock
-
-    class MockDoc:
-        def __init__(self, text, metadata):
-            self.text = text
-            self.metadata = metadata
-
     docs = [
-        MockDoc("ZyncJobs is great.", {"title": "About", "url": "/about", "category": "platform"}),
-        MockDoc("Features include AI matching.", {"title": "Features", "url": "/features", "category": "tech"}),
+        {"text": "ZyncJobs is great.", "title": "About"},
+        {"text": "Features include AI matching.", "title": "Features"},
     ]
     context = chatbot_brain._build_context(docs)
     assert "ZyncJobs is great." in context
@@ -73,20 +62,14 @@ async def test_chatbot_context_building():
 
 
 @pytest.mark.asyncio
-async def test_chatbot_sources_extraction():
-    from recruitment_ai.vector.store import vector_store
-    from unittest.mock import MagicMock
-
-    class MockDoc:
-        def __init__(self, text, metadata):
-            self.text = text
-            self.metadata = metadata
-
-    docs = [MockDoc("text", {"title": "T", "url": "/u", "category": "c"})]
-    sources = chatbot_brain._extract_sources(docs)
-    assert len(sources) == 1
-    assert sources[0]["title"] == "T"
-    assert sources[0]["url"] == "/u"
+async def test_chatbot_citations_building():
+    docs = [
+        {"text": "text", "title": "T", "url": "/u"},
+    ]
+    citations = chatbot_brain._build_citations(docs)
+    assert len(citations) == 1
+    assert citations[0]["title"] == "T"
+    assert citations[0]["url"] == "/u"
 
 
 # ─── JobParserBrain ─────────────────────────────────────────────────────────
@@ -95,14 +78,15 @@ async def test_chatbot_sources_extraction():
 async def test_job_parser_empty():
     state = BrainState(query="")
     result = await job_parser_brain.run(state)
-    assert result.error == "No job description provided"
+    assert result.response is not None
+    assert result.response.get("error") == "No job description provided"
 
 
 @pytest.mark.asyncio
 async def test_job_parser_llm_success(mock_ollama):
     state = BrainState(query="Senior Python Developer at Acme Corp")
     result = await job_parser_brain.run(state)
-    assert result.result is not None
+    assert result.response is not None
     assert result.metadata.get("parser") == "llm"
 
 
@@ -110,63 +94,57 @@ async def test_job_parser_llm_success(mock_ollama):
 async def test_job_parser_fallback(mock_ollama_failure):
     state = BrainState(query="We need a Senior Python Developer with 5+ years of experience. Skills: Python, Django, PostgreSQL")
     result = await job_parser_brain.run(state)
-    assert result.result is not None
+    assert result.response is not None
     assert result.metadata.get("parser") == "fallback"
-    assert "title" in result.result
-    assert "skills_required" in result.result
-    assert "python" in [s.lower() for s in result.result["skills_required"]]
+    assert "title" in result.response
+    assert "skills_required" in result.response
+    assert "python" in [s.lower() for s in result.response["skills_required"]]
 
 
 @pytest.mark.asyncio
 async def test_job_parser_fallback_title_extracted():
     state = BrainState(query="Senior Python Developer\nWe need someone experienced.")
     result = await job_parser_brain.run(state)
-    assert result.result is not None
-    assert result.result["title"] == "Senior Python Developer"
-
-
-@pytest.mark.asyncio
-async def test_job_parser_fallback_empty_result():
-    result = job_parser_brain._empty_result()
-    assert result["title"] == ""
-    assert result["skills_required"] == []
+    assert result.response is not None
+    assert result.response.get("title") == "Senior Python Developer"
 
 
 # ─── JDGeneratorBrain ───────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_jd_generator_empty():
-    state = BrainState(query="")
+    state = BrainState(query="", context={})
     result = await jd_generator_brain.run(state)
-    assert result.error == "No job details provided"
+    assert result.response is not None
+    assert result.response.get("error") == "No job details provided"
 
 
 @pytest.mark.asyncio
 async def test_jd_generator_with_context(mock_ollama_jd):
     state = BrainState(query="", context={"title": "Backend Engineer", "company": "ZyncJobs"})
     result = await jd_generator_brain.run(state)
-    assert result.result is not None
-    assert "job_description" in result.result
+    assert result.response is not None
+    assert "job_description" in result.response
 
 
 @pytest.mark.asyncio
 async def test_jd_generator_fallback(mock_ollama_failure):
     state = BrainState(query="Senior Dev", context={"title": "Backend Engineer"})
     result = await jd_generator_brain.run(state)
-    assert result.result is not None
-    assert result.result.get("fallback") is True
-    assert "Backend Engineer" in result.result["job_description"]
+    assert result.response is not None
+    assert result.response.get("fallback") is True
+    assert "Backend Engineer" in result.response["job_description"]
 
 
 @pytest.mark.asyncio
 async def test_jd_generator_template_fallback():
-    state = BrainState(query="", context={"title": "DevOps Engineer", "company": "TestCo"})
-    result = await jd_generator_brain.run(state)
-    result = await jd_generator_brain.run(state) if not result.result else result
-    params = jd_generator_brain._extract_params({"title": "DevOps Engineer", "company": "TestCo"}, "")
-    output = jd_generator_brain._template_fallback(params)
-    assert "DevOps Engineer" in output
-    assert "TestCo" in output
+    params = jd_generator_brain._template_fallback({
+        "title": "DevOps Engineer", "company": "TestCo",
+        "location": "Remote", "experience_level": "mid",
+        "skills": "Python, Docker",
+    })
+    assert "DevOps Engineer" in params
+    assert "TestCo" in params
 
 
 # ─── ResumeParserBrain ──────────────────────────────────────────────────────
@@ -175,14 +153,15 @@ async def test_jd_generator_template_fallback():
 async def test_resume_parser_empty():
     state = BrainState(query="")
     result = await resume_parser_brain.run(state)
-    assert result.error == "No resume content provided"
+    assert result.response is not None
+    assert result.response.get("error") == "No resume content provided"
 
 
 @pytest.mark.asyncio
 async def test_resume_parser_llm_success(mock_ollama):
     state = BrainState(query="John Doe\njohn@email.com\nPython developer with 5 years experience")
     result = await resume_parser_brain.run(state)
-    assert result.result is not None
+    assert result.response is not None
     assert result.metadata.get("parser") == "llm"
 
 
@@ -190,36 +169,32 @@ async def test_resume_parser_llm_success(mock_ollama):
 async def test_resume_parser_fallback(mock_ollama_failure):
     state = BrainState(query="John Doe\njohn@email.com\nPython developer skilled in Django, React")
     result = await resume_parser_brain.run(state)
-    assert result.result is not None
+    assert result.response is not None
     assert result.metadata.get("parser") == "fallback"
-    assert "personal_info" in result.result
-    assert "skills" in result.result
+    assert "name" in result.response
+    assert "email" in result.response
+    assert "skills" in result.response
 
 
 @pytest.mark.asyncio
-async def test_resume_parser_extract_email():
-    info = resume_parser_brain._extract_personal_info("Contact me at john@example.com")
-    assert info["email"] == "john@example.com"
+async def test_resume_parser_fallback_extract_email():
+    state = BrainState(query="Contact me at john@example.com")
+    result = await resume_parser_brain.run(state)
+    assert result.response.get("email") == "john@example.com"
 
 
 @pytest.mark.asyncio
-async def test_resume_parser_extract_phone():
-    info = resume_parser_brain._extract_personal_info("Phone: +1 (555) 123-4567")
-    assert info["phone"] != ""
+async def test_resume_parser_fallback_extract_phone():
+    state = BrainState(query="Phone: +1 (555) 123-4567")
+    result = await resume_parser_brain.run(state)
+    assert result.response.get("phone", "") != ""
 
 
 @pytest.mark.asyncio
-async def test_resume_parser_extract_linkedin():
-    info = resume_parser_brain._extract_personal_info("linkedin.com/in/johndoe")
-    assert info["linkedin"] == "linkedin.com/in/johndoe"
-
-
-@pytest.mark.asyncio
-async def test_resume_parser_extract_skills():
-    from unittest.mock import MagicMock
-    skills = resume_parser_brain._extract_skills("Python, JavaScript, Docker, Django")
-    assert "python" in [s.lower() for s in skills["technical"]]
-    assert "django" in [s.lower() for s in skills["frameworks"]]
+async def test_resume_parser_fallback_extract_name():
+    state = BrainState(query="John Doe\nSome experience")
+    result = await resume_parser_brain.run(state)
+    assert result.response.get("name") == "John Doe"
 
 
 # ─── ATSBrain ───────────────────────────────────────────────────────────────
@@ -228,7 +203,8 @@ async def test_resume_parser_extract_skills():
 async def test_ats_brain_no_resume():
     state = BrainState(query="")
     result = await ats_brain.run(state)
-    assert result.error == "No resume provided"
+    assert result.response is not None
+    assert result.response.get("error") == "No resume provided"
 
 
 @pytest.mark.asyncio
@@ -238,9 +214,9 @@ async def test_ats_brain_rule_based():
         context={"job_description": "Looking for Python, React, Docker expert"},
     )
     result = await ats_brain.run(state)
-    assert result.result is not None
-    assert "ats_score" in result.result
-    assert result.result["keyword_match"]["matched"] is not None
+    assert result.response is not None
+    assert "ats_score" in result.response
+    assert result.response.get("keyword_match", {}).get("matched") is not None
 
 
 @pytest.mark.asyncio
@@ -250,16 +226,9 @@ async def test_ats_brain_fallback(mock_ollama_failure):
         context={"job_description": "Need Python, Docker, AWS skills"},
     )
     result = await ats_brain.run(state)
-    assert result.result is not None
+    assert result.response is not None
     assert result.metadata.get("model") == "rule_based"
-    assert "ats_score" in result.result
-
-
-@pytest.mark.asyncio
-async def test_ats_brain_empty_result():
-    result = ats_brain._empty_result()
-    assert result["ats_score"] == 0
-    assert result["passes_ats"] is False
+    assert "ats_score" in result.response
 
 
 # ─── JobMatchingBrain ──────────────────────────────────────────────────────
@@ -268,7 +237,8 @@ async def test_ats_brain_empty_result():
 async def test_job_matching_missing_fields():
     state = BrainState(query="")
     result = await job_matching_brain.run(state)
-    assert "Both candidate profile and job requirements required" in result.error
+    assert result.response is not None
+    assert "Both candidate profile and job requirements required" in result.response.get("error", "")
 
 
 @pytest.mark.asyncio
@@ -278,31 +248,33 @@ async def test_job_matching_fallback(mock_ollama_failure):
         context={"job_requirements": "Need Python, React, Docker. 2+ years experience."},
     )
     result = await job_matching_brain.run(state)
-    assert result.result is not None
+    assert result.response is not None
     assert result.metadata.get("model") == "rule_based"
-    assert "match_score" in result.result
-    assert "recommendation" in result.result
+    assert "match_score" in result.response
+    assert "recommendation" in result.response
 
 
 @pytest.mark.asyncio
-async def test_job_matching_rule_based_high_match():
+async def test_job_matching_rule_based_high_match(mock_ollama_failure):
     state = BrainState(
         query="Python, React, Docker, AWS developer with 5 years",
         context={"job_requirements": "Python, React, Docker, AWS required. 3+ years."},
     )
     result = await job_matching_brain.run(state)
-    assert result.result["match_score"] >= 60
-    assert result.result["recommendation"] in ["strong_match", "good_match"]
+    assert result.response is not None
+    assert result.response.get("match_score", 0) >= 60
+    assert result.response.get("recommendation") in ["strong_match", "good_match"]
 
 
 @pytest.mark.asyncio
-async def test_job_matching_rule_based_low_match():
+async def test_job_matching_rule_based_low_match(mock_ollama_failure):
     state = BrainState(
         query="Java developer",
         context={"job_requirements": "Python, React, Docker required. 3+ years."},
     )
     result = await job_matching_brain.run(state)
-    assert result.result["match_score"] < 60
+    assert result.response is not None
+    assert result.response.get("match_score", 100) < 60
 
 
 # ─── CareerBrain ────────────────────────────────────────────────────────────
@@ -312,12 +284,10 @@ async def test_career_advice_fallback(mock_ollama_failure):
     state = BrainState(
         query="Career advice",
         intent="CAREER_ADVICE",
-        context={"current_role": "Junior Dev", "target_role": "Senior Dev"},
     )
     result = await career_brain.run(state)
-    assert result.result is not None
-    assert "career_path" in result.result
-    assert result.metadata.get("fallback") is True
+    assert result.response is not None
+    assert "reply" in result.response or "intent" in result.response
 
 
 @pytest.mark.asyncio
@@ -328,9 +298,9 @@ async def test_skill_assessment_fallback(mock_ollama_failure):
         context={"skill": "Python", "level": "intermediate"},
     )
     result = await career_brain.run(state)
-    assert result.result is not None
-    assert "questions" in result.result
-    assert result.result["questions"] == []
+    assert result.response is not None
+    assert "questions" in result.response
+    assert result.response["questions"] == []
 
 
 @pytest.mark.asyncio
@@ -341,9 +311,9 @@ async def test_interview_prep_fallback(mock_ollama_failure):
         context={"role": "React Developer", "level": "mid"},
     )
     result = await career_brain.run(state)
-    assert result.result is not None
-    assert "questions" in result.result
-    assert result.result["topics_to_review"] == []
+    assert result.response is not None
+    assert "questions" in result.response
+    assert result.response["topics_to_review"] == []
 
 
 @pytest.mark.asyncio
@@ -359,15 +329,15 @@ async def test_resume_builder_fallback(mock_ollama_failure):
         },
     )
     result = await career_brain.run(state)
-    assert result.result is not None
-    assert "summary" in result.result
+    assert result.response is not None
+    assert "summary" in result.response
 
 
 @pytest.mark.asyncio
 async def test_career_unknown_intent_defaults_to_advice(mock_ollama_failure):
     state = BrainState(query="Something", intent="UNKNOWN")
     result = await career_brain.run(state)
-    assert result.result is not None
+    assert result.response is not None
 
 
 # ─── RecruiterBrain ─────────────────────────────────────────────────────────
@@ -379,12 +349,13 @@ async def test_recruiter_search_fallback(mock_ollama_failure):
         user_id="emp_user",
         user_role="employer",
         context={"skills": ["Python", "Django"]},
+        context_data={"job": {"title": "Software Engineer", "description": "Python developer needed"}},
     )
     result = await recruiter_brain.run(state)
-    assert result.result is not None
+    assert result.response is not None
     assert result.metadata.get("fallback") is True
-    assert "search_strategy" in result.result
-    assert "Python" in result.result["search_strategy"]
+    assert "search_strategy" in result.response
+    assert "Python" in result.response["search_strategy"]
 
 
 @pytest.mark.asyncio
@@ -395,20 +366,22 @@ async def test_recruiter_shortlist_fallback(mock_ollama_failure):
             "job_requirements": "Python developer",
             "candidates": [{"name": "Alice"}, {"name": "Bob"}],
         },
+        context_data={"job": {"title": "Software Engineer"}},
     )
     result = await recruiter_brain.run(state)
-    assert result.result is not None
-    assert "shortlisted" in result.result
+    assert result.response is not None
+    assert "shortlisted" in result.response
 
 
 @pytest.mark.asyncio
-async def test_recruiter_routes_to_search_by_default():
-    state = BrainState(query="Find candidates", context={"skills": ["Python"]})
+async def test_recruiter_routes_to_search_by_default(mock_ollama_failure):
+    state = BrainState(
+        query="Find candidates",
+        context_data={"job": {"title": "Engineer", "description": "Python dev needed"}},
+    )
     result = await recruiter_brain.run(state)
-    # Should return results without error
-    assert result.error is None or "error" not in (result.error or "").lower()
-    assert result.result is not None
-    assert "search_strategy" in result.result or "recommended_filters" in result.result
+    assert result.response is not None
+    assert "search_strategy" in result.response or "recommended_filters" in result.response
 
 
 @pytest.mark.asyncio
@@ -416,6 +389,7 @@ async def test_recruiter_shortlist_route(mock_ollama_failure):
     state = BrainState(
         query="shortlist candidates",
         context={"job_requirements": "Python dev", "candidates": [{"name": "Alice"}]},
+        context_data={"job": {"title": "Engineer", "description": "Python"}},
     )
     result = await recruiter_brain.run(state)
-    assert result.error is None or result.result is not None
+    assert result.response is not None

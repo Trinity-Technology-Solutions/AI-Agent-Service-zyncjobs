@@ -1,15 +1,13 @@
-"""Resume Edit Brain — handles per-section resume AI actions.
-Matches the frontend's { section, action, content } pattern and produces
-output in the exact format each UI component expects."""
-
+"""Resume Edit Brain — per-section resume AI actions.
+Uses state.context_data.resume for pre-loaded resume data.
+"""
 import re
 import json
-from recruitment_ai.shared.brain import Brain, BrainState
-from recruitment_ai.shared.ollama_service import ollama_service
+from recruitment_ai.brains.base import Brain, BrainState, BrainResult
+from recruitment_ai.llm import llm_service
 
 RESUME_EDIT_SYSTEM = """You are a professional resume writer. Return ONLY the requested content.
 No explanations, no markdown, no code fences, no bullet symbols unless part of the output format."""
-
 SYSTEM = RESUME_EDIT_SYSTEM
 
 SECTION_PROMPTS = {
@@ -17,76 +15,37 @@ SECTION_PROMPTS = {
         "generate": """Write a professional summary (2-3 sentences) for a {role}.
 Candidate context: {context}
 Return ONLY the summary text — no labels, no prefixes, no placeholders.""",
-        "rewrite": """Rewrite this professional summary to be more impactful:
-{content}
-Return ONLY the rewritten summary text.""",
-        "professional": """Rewrite this professional summary in a formal, professional tone:
-{content}
-Return ONLY the rewritten summary.""",
-        "shorten": """Shorten this professional summary to 2-3 concise sentences:
-{content}
-Return ONLY the shortened version.""",
-        "friendly": """Rewrite this professional summary in a friendly, conversational tone:
-{content}
-Return ONLY the rewritten summary.""",
+        "rewrite": """Rewrite this professional summary to be more impactful:\n{content}\nReturn ONLY the rewritten summary text.""",
+        "professional": """Rewrite this professional summary in a formal, professional tone:\n{content}\nReturn ONLY the rewritten summary.""",
+        "shorten": """Shorten this professional summary to 2-3 concise sentences:\n{content}\nReturn ONLY the shortened version.""",
+        "friendly": """Rewrite this professional summary in a friendly, conversational tone:\n{content}\nReturn ONLY the rewritten summary.""",
     },
     "experience": {
-        "improve": """Improve this resume bullet point. Make it quantifiable, specific, and impactful.
-Use past tense action verbs. Include metrics where possible.
-
-Original: {content}
-Return ONLY the improved version — one sentence, no labels.""",
-        "quantify": """Add a specific metric or number to this resume bullet point to make it more impactful.
-Keep the original meaning. Add percentage, dollar amount, time saved, or user count.
-
-Original: {content}
-Return ONLY the improved version — one sentence, no labels.""",
-        "generate": """Generate 3-4 resume bullet points for {content}.
-Each bullet must be quantifiable, start with a past-tense action verb.
-Return one bullet per line. No numbering, no bullet symbols.""",
+        "improve": """Improve this resume bullet point. Make it quantifiable, specific, and impactful.\nUse past tense action verbs. Include metrics where possible.\n\nOriginal: {content}\nReturn ONLY the improved version.""",
+        "quantify": """Add a specific metric or number to this resume bullet point.\n\nOriginal: {content}\nReturn ONLY the improved version.""",
+        "generate": """Generate 3-4 resume bullet points for {content}.\nEach bullet must be quantifiable, start with a past-tense action verb.\nReturn one bullet per line.""",
     },
     "projects": {
-        "improve": """Improve this project bullet point. Make it specific and impactful.
-Use past tense action verbs. Include technical details.
-
-Original: {content}
-Return ONLY the improved version — one sentence.""",
-        "generate": """Generate 3-4 bullet points describing project work for: {content}.
-Each bullet must be specific, technical, and start with a past-tense action verb.
-Return one per line. No numbering, no bullet symbols.""",
+        "improve": """Improve this project bullet point:\n{content}\nReturn ONLY the improved version.""",
+        "generate": """Generate 3-4 bullet points describing project work for: {content}\nReturn one per line.""",
     },
     "skills": {
-        "generate": """List relevant technical and soft skills for a {role} candidate.
-Context: {context}
-Return as a comma-separated list. Each skill should be 1-3 words.
-Example: Python, JavaScript, AWS, React, Team Leadership, Agile Methodology""",
-        "find_missing": """Given these current skills: {content}
-Suggest 5-8 complementary skills that would strengthen this profile.
-Return as a comma-separated list.""",
+        "generate": """List relevant technical and soft skills for a {role} candidate.\nContext: {context}\nReturn as a comma-separated list.""",
+        "find_missing": """Given these current skills: {content}\nSuggest 5-8 complementary skills.\nReturn as a comma-separated list.""",
     },
     "education": {
-        "generate": """Suggest 2-3 relevant education entries for a candidate targeting: {content}
-Each entry should be formatted as: Degree Name, Institution Name
-Return one per line. Example:
-B.E Computer Science, Anna University
-BCA, University of Madras""",
+        "generate": """Suggest 2-3 relevant education entries for a candidate targeting: {content}\nEach entry: Degree Name, Institution Name\nReturn one per line.""",
     },
     "languages": {
-        "generate": """List 5 common languages found on professional resumes.
-Return as a comma-separated list.
-Example: English, Tamil, Hindi, Spanish, French""",
+        "generate": """List 5 common languages found on professional resumes.\nReturn as a comma-separated list.""",
     },
     "certifications": {
-        "generate": """Suggest 3 certifications relevant for a {role} candidate. Target: {content}
-Each line: Certification Name, Issuing Organization
-Example: AWS Solutions Architect, Amazon
-    Certified Kubernetes Administrator, CNCF
-    Project Management Professional, PMI""",
+        "generate": """Suggest 3 certifications relevant for a {role} candidate. Target: {content}\nEach line: Certification Name, Issuing Organization""",
     },
 }
 
 FALLBACKS = {
-    ("summary", "generate"): lambda ctx: f"Experienced professional with expertise in {ctx.get('role', 'software development')}. Proven track record of delivering high-quality results.",
+    ("summary", "generate"): lambda ctx: f"Experienced professional with expertise in {ctx.get('role', 'software development')}.",
     ("summary", "rewrite"): lambda ctx: ctx.get("content", ""),
     ("summary", "professional"): lambda ctx: ctx.get("content", ""),
     ("summary", "shorten"): lambda ctx: ctx.get("content", ""),
@@ -104,27 +63,20 @@ FALLBACKS = {
 
 
 def _infer_action_from_query(query: str) -> str:
-    query_lower = query.lower()
-    if "shorten" in query_lower:
-        return "shorten"
-    if "improve" in query_lower or "optimize" in query_lower or "quantify" in query_lower:
-        return "improve"
-    if "professional" in query_lower:
-        return "professional"
-    if "friendly" in query_lower or "conversational" in query_lower:
-        return "friendly"
-    if "generate" in query_lower or "create" in query_lower or "write" in query_lower:
-        return "generate"
-    if "fix grammar" in query_lower or "grammar" in query_lower:
-        return "improve"
+    q = query.lower()
+    if "shorten" in q: return "shorten"
+    if "improve" in q or "optimize" in q or "quantify" in q: return "improve"
+    if "professional" in q: return "professional"
+    if "friendly" in q or "conversational" in q: return "friendly"
+    if "generate" in q or "create" in q or "write" in q: return "generate"
+    if "fix grammar" in q or "grammar" in q: return "improve"
     return "improve"
 
 
 def _infer_section_from_query(query: str) -> str:
-    query_lower = query.lower()
-    sections = ["summary", "experience", "education", "skills", "projects", "languages", "certifications"]
-    for s in sections:
-        if s in query_lower:
+    q = query.lower()
+    for s in ["summary", "experience", "education", "skills", "projects", "languages", "certifications"]:
+        if s in q:
             return s
     return "summary"
 
@@ -133,39 +85,32 @@ class ResumeEditBrain(Brain):
     def __init__(self):
         super().__init__()
 
-    async def run(self, state: BrainState) -> BrainState:
-        context = state.context or {}
-        section = (context.get("section") or _infer_section_from_query(state.query or "")).lower()
-        action = (context.get("action") or _infer_action_from_query(state.query or "")).lower()
-        content = context.get("content") or state.query or ""
-        role = context.get("role", section)
+    async def run(self, state: BrainState) -> BrainResult:
+        query = state.request.query or state.query or ""
+        section = (state.context.get("section") or _infer_section_from_query(query)).lower()
+        action = (state.context.get("action") or _infer_action_from_query(query)).lower()
+        content = state.context.get("content") or query
+        role = state.context.get("role", section)
 
         if section == "resume" and action in ("score_advice", "analyze"):
-            return await self._score_advice(state, content)
+            return await self._score_advice(content)
 
         prompt = self._build_prompt(section, action, content, role)
         if not prompt:
-            state.error = f"Unknown section/action: {section}/{action}"
-            state.result = {"reply": "I can help improve your resume. Please try a specific section."}
-            return state
+            return BrainResult(success=False, response={"reply": "I can help improve your resume. Please try a specific section."})
 
         try:
-            result = await ollama_service.generate(
-                brain_name="resume_edit",
-                prompt=prompt,
-                system=SYSTEM,
-                temperature=0.3,
-                max_tokens=512,
+            result = await llm_service.generate(
+                brain_name="resume_edit", prompt=prompt, system=SYSTEM,
+                temperature=0.3, max_tokens=512,
             )
             result = self._clean(result)
             if not result.strip():
                 raise ValueError("Empty result from LLM")
-            state.result = {"reply": result, "section": section, "action": action}
+            return BrainResult(response={"reply": result, "section": section, "action": action})
         except Exception:
             fb = FALLBACKS.get((section, action))
-            state.result = {"reply": fb({"content": content, "role": role}) if fb else "", "section": section, "action": action}
-
-        return state
+            return BrainResult(response={"reply": fb({"content": content, "role": role}) if fb else "", "section": section, "action": action})
 
     def _build_prompt(self, section: str, action: str, content: str, role: str) -> str:
         if section not in SECTION_PROMPTS:
@@ -173,39 +118,24 @@ class ResumeEditBrain(Brain):
         actions = SECTION_PROMPTS[section]
         if action not in actions:
             return ""
-        template = actions[action]
-        ctx = {"role": role, "content": content, "context": content}
-        return template.format(**ctx)
+        return actions[action].format(role=role, content=content, context=content)
 
-    async def _score_advice(self, state: BrainState, content: str) -> BrainState:
-        prompt = f"""Analyze this resume score context and give 3-4 specific improvement tips:
-
-{content}
-
-Return one tip per line as plain text. No numbering, no bullet symbols."""
+    async def _score_advice(self, content: str) -> BrainResult:
+        prompt = f"""Analyze this resume score context and give 3-4 specific improvement tips:\n\n{content}\n\nReturn one tip per line as plain text."""
         try:
-            result = await ollama_service.generate(
-                brain_name="resume_edit",
-                prompt=prompt,
-                system=SYSTEM,
-                temperature=0.3,
-                max_tokens=512,
+            result = await llm_service.generate(
+                brain_name="resume_edit", prompt=prompt, system=SYSTEM,
+                temperature=0.3, max_tokens=512,
             )
             result = self._clean(result)
-            state.result = {"reply": result, "section": "resume", "action": "score_advice"}
+            return BrainResult(response={"reply": result, "section": "resume", "action": "score_advice"})
         except Exception:
-            state.result = {
-                "reply": "Add more quantifiable achievements\nUse stronger action verbs\nEnsure consistent formatting",
-                "section": "resume",
-                "action": "score_advice",
-            }
-        return state
+            return BrainResult(response={"reply": "Add more quantifiable achievements\nUse stronger action verbs\nEnsure consistent formatting", "section": "resume", "action": "score_advice"})
 
     def _clean(self, text: str) -> str:
         text = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL)
         text = re.sub(r"^[-•*#]\s*", "", text, flags=re.MULTILINE)
-        text = text.strip()
-        return text
+        return text.strip()
 
 
 resume_edit_brain = ResumeEditBrain()

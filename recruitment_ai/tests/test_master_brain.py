@@ -1,15 +1,16 @@
 """Tests for MasterBrain orchestration."""
 import pytest
-from recruitment_ai.shared.master_brain import MasterBrain, master_brain
-from recruitment_ai.shared.brain import BrainState
+from recruitment_ai.brains.master.master_brain import MasterBrain, master_brain
+from recruitment_ai.brains.base import BrainState
 
 
 @pytest.mark.asyncio
 async def test_master_brain_all_brains_registered():
-    expected = {"JOB_PARSER", "JD_GENERATOR", "RESUME_PARSER", "ATS_SCORE",
-                "JOB_MATCH", "CAREER_ADVICE", "SKILL_ASSESSMENT", "INTERVIEW_PREP",
-                "RESUME_BUILDER", "RECRUITER", "RECRUITER_SEARCH",
-                "RECRUITER_SHORTLIST", "CHAT"}
+    expected = {"ATS_SCORE", "CAREER_ADVICE", "CAREER_ROADMAP", "CHAT", "COVER_LETTER",
+                "INTERVIEW_PREP", "JD_GENERATOR", "JOB_MATCH", "JOB_PARSER",
+                "RECRUITER", "RECRUITER_SEARCH", "RECRUITER_SHORTLIST",
+                "RESUME_BUILDER", "RESUME_EDIT", "RESUME_PARSER",
+                "SKILL_ASSESSMENT", "SKILL_GAP"}
     assert set(master_brain.brains.keys()) == expected
 
 

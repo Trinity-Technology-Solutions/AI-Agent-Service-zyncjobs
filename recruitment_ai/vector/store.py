@@ -6,7 +6,7 @@ from typing import Optional, Any
 from dataclasses import dataclass
 import logging
 from recruitment_ai.config.settings import settings
-from recruitment_ai.shared.ollama_service import ollama_service
+from recruitment_ai.llm import llm_service
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,7 @@ class VectorStore:
     async def embed(self, text: str) -> list[float]:
         """Embed using BGE-M3 (Qdrant path) or nomic-embed-text (ChromaDB path)."""
         model = self._embed_model if self._qdrant_available else EMBED_FALLBACK
-        return await ollama_service.embed(text=text, model=model)
+        return await llm_service.embed(text=text)
 
     # ── Search ─────────────────────────────────────────────────────────────
 
@@ -129,23 +129,32 @@ class VectorStore:
 
     async def _search_chroma(self, query: str, top_k: int) -> list[VectorDoc]:
         try:
-            from recruitment_ai.vector.ingest import ingester
-            from recruitment_ai.vector.reranker import rerank
-            docs = ingester.search(query, top_k=top_k)
-            docs = rerank(query, docs, top_k=min(3, top_k))
-            return [
-                VectorDoc(
-                    text=d.text,
+            import chromadb
+            from chromadb.config import Settings as ChromaSettings
+            client = chromadb.PersistentClient(
+                path=settings.CHROMADB_PATH,
+                settings=ChromaSettings(anonymized_telemetry=False),
+            )
+            collection = client.get_or_create_collection(settings.CHROMADB_COLLECTION)
+            results = collection.query(
+                query_texts=[query],
+                n_results=top_k,
+            )
+            if not results["ids"] or not results["ids"][0]:
+                return []
+            docs = []
+            for i, doc_id in enumerate(results["ids"][0]):
+                metadata = results["metadatas"][0][i] if results.get("metadatas") else {}
+                docs.append(VectorDoc(
+                    text=results["documents"][0][i] if results.get("documents") else "",
                     metadata={
-                        "url": d.metadata.get("url", ""),
-                        "title": d.metadata.get("title", "ZyncJobs"),
-                        "category": d.metadata.get("category", ""),
+                        "url": metadata.get("url", ""),
+                        "title": metadata.get("title", "ZyncJobs"),
+                        "category": metadata.get("category", ""),
                     },
-                    score=d.score,
-                )
-                for d in docs
-                if d.score < SCORE_THRESHOLD
-            ]
+                    score=1.0 - (results["distances"][0][i] if results.get("distances") else 0.0),
+                ))
+            return docs
         except Exception as e:
             logger.warning("ChromaDB search failed: %s", e)
             return []
@@ -172,11 +181,7 @@ class VectorStore:
     def count(self) -> int:
         if self._qdrant_available:
             return 0  # async count not available as sync property — use /knowledge/stats endpoint
-        try:
-            from recruitment_ai.vector.ingest import ingester
-            return ingester.count
-        except Exception:
-            return 0
+        return 0
 
     @property
     def backend(self) -> str:

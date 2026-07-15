@@ -20,6 +20,14 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=True)
     role = Column(String(20), default="candidate")
     name = Column(String(255), nullable=True)
+    title = Column(String(255), nullable=True)
+    location = Column(String(255), nullable=True)
+    experience_years = Column(Float, nullable=True)
+    skills = Column(JSON, nullable=True)
+    preferences = Column(JSON, nullable=True)
+    ats_score = Column(Integer, nullable=True)
+    applications_count = Column(Integer, default=0)
+    missing_skills = Column(JSON, nullable=True)
     profile_data = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -61,6 +69,9 @@ class Resume(Base):
     title = Column(String(255), default="My Resume")
     raw_text = Column(Text, nullable=True)
     parsed_data = Column(JSON, nullable=True)
+    skills = Column(JSON, nullable=True)
+    experience = Column(JSON, nullable=True)
+    education = Column(JSON, nullable=True)
     ats_score = Column(Integer, nullable=True)
     file_path = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -82,6 +93,40 @@ class Conversation(Base):
 
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     user = relationship("User", back_populates="conversations")
+
+
+class Company(Base):
+    __tablename__ = "companies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), unique=True, nullable=False, index=True)
+    industry = Column(String(255), nullable=True)
+    description = Column(Text, nullable=True)
+    logo_url = Column(String(500), nullable=True)
+    website = Column(String(500), nullable=True)
+    size = Column(String(50), nullable=True)
+    location = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    job_posts = relationship("JobPost", backref="company_ref", foreign_keys=[JobPost.company])
+
+
+class Assessment(Base):
+    __tablename__ = "assessments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    skill = Column(String(100), nullable=False)
+    score = Column(Float, nullable=True)
+    level = Column(String(50), nullable=True)
+    questions = Column(JSON, nullable=True)
+    answers = Column(JSON, nullable=True)
+    completed = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", backref="assessments")
 
 
 class KnowledgeChunk(Base):

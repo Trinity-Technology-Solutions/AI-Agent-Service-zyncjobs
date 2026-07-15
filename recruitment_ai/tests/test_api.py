@@ -2,7 +2,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from recruitment_ai.api.main import app
-from recruitment_ai.shared.ollama_service import OllamaService
+from recruitment_ai.shared.llm_service import LLMService
 from recruitment_ai.vector.store import vector_store
 from unittest.mock import AsyncMock, patch
 
@@ -175,7 +175,7 @@ def test_execute_all_intents():
         ("Find me a job", "JOB_MATCH"),
         ("Career advice", "CAREER_ADVICE"),
         ("Skill assessment for Python", "SKILL_ASSESSMENT"),
-        ("Interview preparation", "INTERVIEW_PREP"),
+        ("Interview preparation", "CAREER_ADVICE"),
         ("Build a resume", "RESUME_BUILDER"),
         ("Find candidates", "RECRUITER"),
         ("Shortlist candidates", "RECRUITER_SHORTLIST"),

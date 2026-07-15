@@ -1,0 +1,34 @@
+[Unit]
+Description=ZyncJobs AI Celery Worker — async task processing
+Documentation=https://zyncjobs.com/docs
+After=network.target redis.service
+Wants=redis.service
+
+[Service]
+Type=simple
+User=appuser
+Group=appuser
+WorkingDirectory=/opt/zyncjobs/ai-service
+EnvironmentFile=/opt/zyncjobs/ai-service/.env
+ExecStart=/opt/zyncjobs/ai-service/venv/bin/celery \
+    -A recruitment_ai.services.celery_app worker \
+    --loglevel=info \
+    --concurrency=4 \
+    --max-tasks-per-child=100 \
+    --time-limit=600
+Restart=always
+RestartSec=5
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=4G
+CPUQuota=400%
+
+[Install]
+WantedBy=multi-user.target

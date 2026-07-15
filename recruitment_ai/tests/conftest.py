@@ -1,8 +1,11 @@
 """Shared test fixtures and mocks."""
+import os
+os.environ["RATE_LIMIT_ENABLED"] = "false"
+
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
-from recruitment_ai.shared.brain import BrainState
-from recruitment_ai.shared.ollama_service import OllamaService
+from recruitment_ai.brains.base import BrainState
+from recruitment_ai.shared.llm_service import LLMService
 
 
 @pytest.fixture
@@ -29,8 +32,8 @@ def employer_state():
 
 @pytest.fixture
 def mock_ollama():
-    """Mock OllamaService.generate to return a predictable response."""
-    patcher = patch.object(OllamaService, 'generate', new_callable=AsyncMock)
+    """Mock LLMService.generate to return a predictable response."""
+    patcher = patch.object(LLMService, 'generate', new_callable=AsyncMock)
     mock = patcher.start()
     mock.return_value = '{"result": "mocked response"}'
     yield mock
@@ -39,8 +42,8 @@ def mock_ollama():
 
 @pytest.fixture
 def mock_ollama_failure():
-    """Mock OllamaService.generate to raise an exception (tests fallback)."""
-    patcher = patch.object(OllamaService, 'generate', new_callable=AsyncMock)
+    """Mock LLMService.generate to raise an exception (tests fallback)."""
+    patcher = patch.object(LLMService, 'generate', new_callable=AsyncMock)
     mock = patcher.start()
     mock.side_effect = Exception("Ollama unavailable")
     yield mock
@@ -49,8 +52,8 @@ def mock_ollama_failure():
 
 @pytest.fixture
 def mock_ollama_jd():
-    """Mock OllamaService.generate returning a job description."""
-    patcher = patch.object(OllamaService, 'generate', new_callable=AsyncMock)
+    """Mock LLMService.generate returning a job description."""
+    patcher = patch.object(LLMService, 'generate', new_callable=AsyncMock)
     mock = patcher.start()
     mock.return_value = """# Software Engineer at ZyncJobs
 
@@ -74,10 +77,36 @@ Submit your resume."""
 
 @pytest.fixture
 def mock_ollama_ats():
-    """Mock OllamaService.generate returning ATS analysis JSON."""
-    patcher = patch.object(OllamaService, 'generate', new_callable=AsyncMock)
+    """Mock LLMService.generate returning ATS analysis JSON."""
+    patcher = patch.object(LLMService, 'generate', new_callable=AsyncMock)
     mock = patcher.start()
     mock.return_value = '{"ats_score": 85, "keyword_match": {"matched": ["python", "react"], "missing": ["docker"], "match_percentage": 67}, "formatting_score": 80, "section_completeness": 90, "experience_relevance": 75, "suggestions": ["Add missing skill: docker"], "passes_ats": true}'
+    yield mock
+    patcher.stop()
+
+
+@pytest.fixture(autouse=True)
+def mock_backend_client():
+    """Mock BackendClient globally so tests never make real HTTP calls."""
+    patcher = patch('recruitment_ai.services.backend_client.backend_client')
+    mock = patcher.start()
+
+    async def return_none(*args, **kwargs):
+        return None
+
+    async def return_empty_list(*args, **kwargs):
+        return []
+
+    mock.get_user.side_effect = return_none
+    mock.get_resume.side_effect = return_none
+    mock.get_company.side_effect = return_none
+    mock.get_job.side_effect = return_none
+    mock.get_assessment.side_effect = return_none
+    mock.get_conversation_history.side_effect = return_empty_list
+    mock.search_jobs.side_effect = return_empty_list
+    mock.search_candidates.side_effect = return_empty_list
+    mock.health_check.side_effect = return_none
+
     yield mock
     patcher.stop()
 

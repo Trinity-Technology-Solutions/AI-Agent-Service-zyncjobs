@@ -1,8 +1,9 @@
-"""Amazon Bedrock LLM provider — used in production."""
-import json
+import logging
 from typing import Optional
 from recruitment_ai.services.llm.base import BaseLLMProvider
 from recruitment_ai.config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 
 class BedrockProvider(BaseLLMProvider):
@@ -23,34 +24,36 @@ class BedrockProvider(BaseLLMProvider):
     ) -> str:
         import asyncio
         return await asyncio.get_event_loop().run_in_executor(
-            None, self._sync_generate, prompt, system, temperature, max_tokens
+            None, self._sync_generate, brain_name, prompt, system, temperature, max_tokens
         )
 
     def _sync_generate(
         self,
+        brain_name: str,
         prompt: str,
         system: Optional[str],
         temperature: float,
         max_tokens: int,
     ) -> str:
-        messages = [{"role": "user", "content": prompt}]
-        body: dict = {
+        logger.info(
+            "Calling Bedrock | model=%s | brain=%s",
+            self.model_id,
+            brain_name,
+        )
+        messages = [{"role": "user", "content": [{"text": prompt}]}]
+        kwargs = {
+            "modelId": self.model_id,
             "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "anthropic_version": "bedrock-2023-05-31",
+            "inferenceConfig": {
+                "maxTokens": max_tokens,
+                "temperature": temperature,
+            },
         }
         if system:
-            body["system"] = system
+            kwargs["system"] = [{"text": system}]
 
-        resp = self._client.invoke_model(
-            modelId=self.model_id,
-            body=json.dumps(body),
-            contentType="application/json",
-            accept="application/json",
-        )
-        result = json.loads(resp["body"].read())
-        return result.get("content", [{}])[0].get("text", "")
+        resp = self._client.converse(**kwargs)
+        return resp["output"]["message"]["content"][0]["text"]
 
     async def embed(self, text: str) -> list[float]:
         import asyncio
@@ -59,6 +62,7 @@ class BedrockProvider(BaseLLMProvider):
         )
 
     def _sync_embed(self, text: str) -> list[float]:
+        import json
         body = json.dumps({"inputText": text})
         resp = self._embed_client.invoke_model(
             modelId=settings.BEDROCK_EMBED_MODEL,
@@ -77,3 +81,6 @@ class BedrockProvider(BaseLLMProvider):
             return True
         except Exception:
             return False
+
+    async def close(self):
+        pass

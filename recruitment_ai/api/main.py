@@ -172,12 +172,14 @@ async def execute_ai(request: ExecuteRequest, user: dict = Depends(get_current_u
 @app.get("/health")
 async def health():
     from recruitment_ai.llm import llm_service
-    ollama_ok = await llm_service.health_check()
+    provider_ok = await llm_service.health_check()
     return {
-        "status": "healthy" if ollama_ok else "degraded",
+        "status": "healthy" if provider_ok else "degraded",
         "service": settings.APP_NAME,
         "version": settings.APP_VERSION,
-        "ollama": "connected" if ollama_ok else "unreachable",
+        "provider": settings.LLM_PROVIDER,
+        "model": settings.BEDROCK_MODEL if settings.LLM_PROVIDER == "bedrock" else settings._DEFAULT_MODEL,
+        "llm": "connected" if provider_ok else "unreachable",
     }
 
 

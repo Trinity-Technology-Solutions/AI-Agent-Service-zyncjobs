@@ -47,7 +47,8 @@ class ChatbotBrain(Brain):
         rag_chunks = state.retrieved_documents.chunks or []
 
         if not rag_chunks:
-            reply = await self._general_answer(query)
+            history_list = state.context_data.user_preferences.get("history", [])
+            reply = await self._general_answer(query, history_list)
             return BrainResult(
                 response={"reply": reply, "sources": [], "intent": "ANSWERED"},
                 execution_time=time.perf_counter() - start,
@@ -133,12 +134,20 @@ class ChatbotBrain(Brain):
         except Exception:
             return "I'm having trouble processing your request right now. Please try again."
 
-    async def _general_answer(self, query: str) -> str:
+    async def _general_answer(self, query: str, history: list) -> str:
         system = get_system_prompt("chatbot")
+        history_text = ""
+        for turn in history[-6:]:
+            role = turn.get("role", "user")
+            content = turn.get("content", "")
+            history_text += f"{role}: {content}\n"
+        prompt = query
+        if history_text:
+            prompt = f"Previous conversation:\n{history_text}\n\nUser: {query}"
         try:
             return await llm_service.generate(
                 brain_name="chatbot",
-                prompt=query,
+                prompt=prompt,
                 system=system,
                 temperature=0.3,
                 max_tokens=400,

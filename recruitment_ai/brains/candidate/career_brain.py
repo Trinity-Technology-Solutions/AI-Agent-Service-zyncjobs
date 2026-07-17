@@ -13,6 +13,8 @@ CAREER_SYSTEM = get_system_prompt("career")
 CAREER_CHAT_SYSTEM_TPL = get_prompt("career_chat_system", user_context="{user_context}")
 INTERVIEW_SYSTEM = get_system_prompt("interview")
 RESUME_BUILDER_SYSTEM_TMPL = """You are a professional resume writer.
+If the input contains specific technologies/skills/tools, use ONLY those. Do NOT invent or assume any.
+If the input only mentions a role title (e.g. 'Backend Developer, Fresher' with no specifics), you may suggest commonly used technologies relevant to that role.
 Return ONLY valid JSON as specified. No extra text, no markdown, no explanation."""
 SKILL_ASSESSMENT_SYSTEM = """You are a technical interviewer generating MCQ questions.
 Return ONLY valid JSON. No markdown, no explanation, no code blocks."""
@@ -56,10 +58,22 @@ class CareerBrain(Brain):
     async def _chat_advice(self, state: BrainState, query: str, start: float) -> BrainResult:
         clean_query = re.sub(r'^career advice:\s*', '', query, flags=re.IGNORECASE).strip()
         user_context = self._build_user_context(state)
+        history = state.context_data.user_preferences.get("history", [])
+        history_text = ""
+        for turn in history[-6:]:
+            role = turn.get("role", "user")
+            content = turn.get("content", "")
+            history_text += f"{role}: {content}\n"
         rag = state.retrieved_documents.chunks or []
         rag_text = "\n".join(c.get("text", "") for c in rag[:3]) if rag else ""
         system = get_prompt("career_chat_system", user_context=user_context)
-        prompt = f"{clean_query}\n\nRelevant context:\n{rag_text}" if rag_text else clean_query
+        parts = []
+        if history_text:
+            parts.append(f"Previous conversation:\n{history_text}")
+        parts.append(f"User: {clean_query}")
+        if rag_text:
+            parts.append(f"Relevant context:\n{rag_text}")
+        prompt = "\n\n".join(parts)
         try:
             reply = await llm_service.generate(
                 brain_name="career_advice", prompt=prompt, system=system,
@@ -163,7 +177,7 @@ class CareerBrain(Brain):
                 target_role=ctx.user_preferences.get("target_role", "Software Engineer"),
             )
         else:
-            prompt = f"""Generate resume content based on this description:\n\n{query}\n\nReturn JSON with:\n{{"summary": "...", "experience_bullets": [], "skills_formatted": {{}}, "ats_keywords": []}}"""
+            prompt = f"""Generate resume content based on this description:\n\n{query}\n\nIf the description has specific technologies/skills, use ONLY those. If it only mentions a role (e.g. 'Backend Developer, Fresher'), suggest commonly used technologies for that role.\n\nReturn JSON with:\n{{"summary": "...", "experience_bullets": [], "skills_formatted": {{}}, "ats_keywords": []}}"""
         try:
             result = await llm_service.generate(
                 brain_name="resume_builder", prompt=prompt, system=RESUME_BUILDER_SYSTEM_TMPL,

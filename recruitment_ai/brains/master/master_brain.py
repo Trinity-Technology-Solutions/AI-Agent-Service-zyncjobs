@@ -63,8 +63,8 @@ class MasterBrain:
             if result.success:
                 state.result = result.data
             else:
-                state.error = result.error
-                state.result = {"error": result.error} if result.error else None
+                state.error = result.error or (result.response.get("error") if result.response else None) or f"{brain.name} returned an error"
+                state.result = {"error": state.error}
             state.metadata.update(result.metadata)
             state.metadata["brain"] = brain.name
 

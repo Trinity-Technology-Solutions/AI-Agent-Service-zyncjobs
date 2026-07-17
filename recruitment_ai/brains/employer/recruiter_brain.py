@@ -21,18 +21,26 @@ class RecruiterBrain(Brain):
 
         has_structured_context = bool(ctx.job.title or ctx.job.description or ctx.company.name or state.context.get("candidates"))
         if not has_structured_context:
-            return await self._chat_recruiter(query, start)
+            return await self._chat_recruiter(query, state.context_data.user_preferences.get("history", []), start)
 
         if "shortlist" in query.lower() or "evaluate" in query.lower():
             return await self._shortlist(state.context, start)
         return await self._search(query, state.context, start)
 
-    async def _chat_recruiter(self, query: str, start: float) -> BrainResult:
+    async def _chat_recruiter(self, query: str, history: list, start: float) -> BrainResult:
         clean_query = re.sub(r'^recruiter:\s*', '', query, flags=re.IGNORECASE).strip()
+        history_text = ""
+        for turn in history[-6:]:
+            role = turn.get("role", "user")
+            content = turn.get("content", "")
+            history_text += f"{role}: {content}\n"
+        prompt = clean_query
+        if history_text:
+            prompt = f"Previous conversation:\n{history_text}\n\nRecruiter: {clean_query}"
         system = get_prompt("recruiter_chat_system")
         try:
             reply = await llm_service.generate(
-                brain_name="recruiter", prompt=clean_query, system=system,
+                brain_name="recruiter", prompt=prompt, system=system,
                 temperature=0.4, max_tokens=600,
             )
             reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()

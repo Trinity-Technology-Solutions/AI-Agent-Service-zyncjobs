@@ -14,6 +14,7 @@ SECTION_PROMPTS = {
     "summary": {
         "generate": """Write a professional summary (2-3 sentences) for a {role}.
 Candidate context: {context}
+If the context has specific technologies/skills, use ONLY those. If it only has a role title (e.g. 'Backend Developer, Fresher'), you may suggest relevant technologies commonly used in that role.
 Return ONLY the summary text — no labels, no prefixes, no placeholders.""",
         "rewrite": """Rewrite this professional summary to be more impactful:\n{content}\nReturn ONLY the rewritten summary text.""",
         "professional": """Rewrite this professional summary in a formal, professional tone:\n{content}\nReturn ONLY the rewritten summary.""",
@@ -21,17 +22,18 @@ Return ONLY the summary text — no labels, no prefixes, no placeholders.""",
         "friendly": """Rewrite this professional summary in a friendly, conversational tone:\n{content}\nReturn ONLY the rewritten summary.""",
     },
     "experience": {
-        "improve": """Improve this resume bullet point. Make it quantifiable, specific, and impactful.\nUse past tense action verbs. Include metrics where possible.\n\nOriginal: {content}\nReturn ONLY the improved version.""",
-        "quantify": """Add a specific metric or number to this resume bullet point.\n\nOriginal: {content}\nReturn ONLY the improved version.""",
-        "generate": """Generate 3-4 resume bullet points for {content}.\nEach bullet must be quantifiable, start with a past-tense action verb.\nReturn one bullet per line.""",
+        "improve": """Improve this resume bullet point. Make it quantifiable, specific, and impactful.\nUse past tense action verbs. Include metrics where possible.\nCRITICAL: Preserve ALL original technologies and tools exactly as written. Do NOT add any new programming languages, frameworks, or tools.\n\nOriginal: {content}\nReturn ONLY the improved version.""",
+        "quantify": """Add a specific metric or number to this resume bullet point.\nCRITICAL: Preserve ALL original technologies and tools exactly as written. Do NOT add or change any technologies.\n\nOriginal: {content}\nReturn ONLY the improved version.""",
+        "generate": """Generate 3-4 resume bullet points for {content}.\nEach bullet must be quantifiable, start with a past-tense action verb.\nIf the input has specific technologies, use ONLY those. If it only mentions a role (e.g. 'Backend Developer, Fresher'), suggest commonly used technologies relevant to that role.
+Return one bullet per line.""",
     },
     "projects": {
-        "improve": """Improve this project bullet point:\n{content}\nReturn ONLY the improved version.""",
-        "generate": """Generate 3-4 bullet points describing project work for: {content}\nReturn one per line.""",
+        "improve": """Improve this project bullet point:\n{content}\nCRITICAL: Preserve ALL original technologies exactly as written. Do NOT add any new ones.\nReturn ONLY the improved version.""",
+        "generate": """Generate 3-4 bullet points describing project work for: {content}\nIf the content has specific technologies, use ONLY those. If it only mentions a role or project name, suggest commonly used technologies for that type of project.\nReturn one per line.""",
     },
     "skills": {
-        "generate": """List relevant technical and soft skills for a {role} candidate.\nContext: {context}\nReturn as a comma-separated list.""",
-        "find_missing": """Given these current skills: {content}\nSuggest 5-8 complementary skills.\nReturn as a comma-separated list.""",
+        "generate": """List relevant technical and soft skills for a {role} candidate.\nContext: {context}\nIf context has specific skills, use ONLY those. If it only has a role title, suggest common skills for that role.\nReturn as a comma-separated list.""",
+        "find_missing": """Given these current skills: {content}\nSuggest 5-8 complementary skills that naturally build on the given skills.\nReturn as a comma-separated list.""",
     },
     "education": {
         "generate": """Suggest 2-3 relevant education entries for a candidate targeting: {content}\nEach entry: Degree Name, Institution Name\nReturn one per line.""",

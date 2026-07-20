@@ -7,6 +7,7 @@ import time
 from recruitment_ai.brains.base import Brain, BrainState, BrainResult
 from recruitment_ai.llm import llm_service
 from recruitment_ai.validators.json_validator import validate_json_strict
+from recruitment_ai.brains.candidate.skill_keywords import SKILL_KEYWORDS, extract_matched_skills
 
 JOB_MATCH_SYSTEM = """You are a job matching expert. Evaluate candidate profiles against job requirements.
 Return ONLY valid JSON. No extra text, no markdown, no explanation."""
@@ -78,18 +79,16 @@ class JobMatchingBrain(Brain):
             )
 
     def _rule_based_match(self, candidate: str, job: str) -> dict:
-        cand_lower = candidate.lower()
-        job_lower = job.lower()
-        all_skills = ["python", "java", "javascript", "react", "node", "sql", "aws", "docker", "kubernetes", "git", "linux", "agile", "scrum", "rest", "api", "html", "css", "typescript", "go", "rust", "c++", "c#", ".net", "spring", "django", "flask", "fastapi", "postgresql", "mongodb", "redis"]
-        cand_skills = set(s for s in all_skills if s in cand_lower)
-        job_skills = set(s for s in all_skills if s in job_lower)
+        cand_skills = extract_matched_skills(candidate)
+        job_skills = extract_matched_skills(job)
         required = job_skills
         matched = list(required & cand_skills)
         missing = list(required - cand_skills)
-        match_pct = int(len(matched) / len(required) * 100) if required else 100
-        exp_match = re.search(r"(\d+)\+?\s*years?", job_lower)
+        match_pct = round(len(matched) / len(required) * 100) if required else 0
+        exp_match = re.search(r"(\d+)\+?\s*years?", job.lower())
         years_req = int(exp_match.group(1)) if exp_match else 0
-        score = match_pct * 0.6 + (100 if years_req == 0 else min(100, 100 - years_req * 10)) * 0.4
+        exp_score = 100 if years_req == 0 else max(0, 100 - years_req * 10)
+        score = round(match_pct * 0.6 + exp_score * 0.4)
 
         if score >= 80:
             rec = "strong_match"

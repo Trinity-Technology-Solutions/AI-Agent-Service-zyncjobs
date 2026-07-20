@@ -64,7 +64,8 @@ class OllamaProvider(BaseLLMProvider):
             json={"model": "nomic-embed-text", "prompt": text},
         )
         resp.raise_for_status()
-        return resp.json().get("embedding", [])
+        embedding = resp.json().get("embedding", [])
+        return embedding if embedding else [0.0] * 768
 
     async def health_check(self) -> bool:
         try:

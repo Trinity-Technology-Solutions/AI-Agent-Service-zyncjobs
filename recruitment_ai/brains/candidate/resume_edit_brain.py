@@ -32,8 +32,8 @@ Return one bullet per line.""",
         "generate": """Generate 3-4 bullet points describing project work for: {content}\nIf the content has specific technologies, use ONLY those. If it only mentions a role or project name, suggest commonly used technologies for that type of project.\nReturn one per line.""",
     },
     "skills": {
-        "generate": """List relevant technical and soft skills for a {role} candidate.\nContext: {context}\nIf context has specific skills, use ONLY those. If it only has a role title, suggest common skills for that role.\nReturn as a comma-separated list.""",
-        "find_missing": """Given these current skills: {content}\nSuggest 5-8 complementary skills that naturally build on the given skills.\nReturn as a comma-separated list.""",
+        "generate": """List relevant technical and soft skills for a {role} candidate.\nCurrent profile: {content}\nIf context has specific skills, use ONLY those. If it only has a role title, suggest common skills for that role.\nReturn as a comma-separated list.""",
+        "find_missing": """Given these current skills: {content}\nTarget role: {role}\nSuggest 5-8 complementary skills relevant to the target role that build on the given skills.\nReturn as a comma-separated list.""",
     },
     "education": {
         "generate": """Suggest 2-3 relevant education entries for a candidate targeting: {content}\nEach entry: Degree Name, Institution Name\nReturn one per line.""",
@@ -64,14 +64,24 @@ FALLBACKS = {
 }
 
 
+def _extract_role_from_query(query: str) -> str | None:
+    match = re.search(r"Target Role:\s*(.+?)(?:\n|$)", query, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
 def _infer_action_from_query(query: str) -> str:
     q = query.lower()
     if "shorten" in q: return "shorten"
-    if "improve" in q or "optimize" in q or "quantify" in q: return "improve"
+    if "quantify" in q: return "quantify"
+    if "rewrite" in q: return "rewrite"
+    if "improve" in q or "optimize" in q: return "improve"
     if "professional" in q: return "professional"
     if "friendly" in q or "conversational" in q: return "friendly"
     if "generate" in q or "create" in q or "write" in q: return "generate"
     if "fix grammar" in q or "grammar" in q: return "improve"
+    if "find missing" in q or "missing skills" in q: return "find_missing"
     return "improve"
 
 
@@ -92,7 +102,12 @@ class ResumeEditBrain(Brain):
         section = (state.context.get("section") or _infer_section_from_query(query)).lower()
         action = (state.context.get("action") or _infer_action_from_query(query)).lower()
         content = state.context.get("content") or query
-        role = state.context.get("role", section)
+        role = (
+            state.context.get("role")
+            or state.context_data.user_preferences.get("targetRole")
+            or _extract_role_from_query(query)
+            or section
+        )
 
         if section == "resume" and action in ("score_advice", "analyze"):
             return await self._score_advice(content)

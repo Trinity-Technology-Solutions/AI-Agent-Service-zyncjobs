@@ -7,13 +7,7 @@ from recruitment_ai.brains.base import Brain, BrainState, BrainResult
 from recruitment_ai.llm import llm_service
 from recruitment_ai.validators.json_validator import validate_json_strict, ensure_json_fields
 from recruitment_ai.prompts import get_prompt, get_system_prompt
-
-SKILL_KEYWORDS = [
-    "python", "java", "javascript", "react", "node", "sql", "aws", "docker",
-    "kubernetes", "git", "linux", "typescript", "go", "rust", "c++", "c#",
-    ".net", "spring", "django", "flask", "fastapi", "postgresql", "mongodb",
-    "redis", "html", "css", "agile", "scrum",
-]
+from recruitment_ai.brains.candidate.skill_keywords import SKILL_KEYWORDS
 
 
 class ResumeParserBrain(Brain):
@@ -30,7 +24,7 @@ class ResumeParserBrain(Brain):
         if not content.strip():
             return BrainResult(success=False, response={"error": "No resume content provided"})
 
-        prompt = get_prompt("resume_parser_prompt", resume_text=content[:5000])
+        prompt = get_prompt("resume_parser_prompt", resume_text=content[:8000])
         system = get_system_prompt("resume_parser")
 
         try:

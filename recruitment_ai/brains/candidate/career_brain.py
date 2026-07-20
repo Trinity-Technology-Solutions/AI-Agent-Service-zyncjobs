@@ -37,8 +37,14 @@ class CareerBrain(Brain):
         elif intent == "RESUME_BUILDER":
             return await self._resume_builder(state, ctx, start)
         elif intent == "CAREER_ADVICE":
-            if ctx.resume.skills or ctx.resume.parsed:
-                return await self._career_advice(state, ctx, start)
+            has_profile = (
+                ctx.resume.skills
+                or ctx.user_preferences.get("skills")
+                or ctx.user_preferences.get("current_role")
+                or ctx.user_preferences.get("user_name")
+            )
+            if has_profile:
+                return await self._chat_advice(state, query, start)
             return await self._chat_advice(state, query, start)
         else:
             return await self._chat_advice(state, query, start)
@@ -47,13 +53,51 @@ class CareerBrain(Brain):
         parts = []
         resume = state.context_data.resume
         prefs = state.context_data.user_preferences
-        if resume.skills:
-            parts.append(f"Skills: {', '.join(resume.skills[:10])}")
-        if prefs.get("ats_score"):
-            parts.append(f"ATS Score: {prefs['ats_score']}%")
-        if prefs.get("experience_years"):
-            parts.append(f"Experience: {prefs['experience_years']}")
-        return "\n".join(parts) or "No profile data available."
+
+        # Name
+        name = prefs.get("user_name") or state.user.name
+        if name:
+            parts.append(f"Name: {name}")
+
+        # Current role — from prefs (sent by frontend buildUserContext)
+        current_role = prefs.get("current_role") or prefs.get("jobTitle")
+        if current_role:
+            parts.append(f"Current Role: {current_role}")
+
+        # Target role
+        target_role = prefs.get("target_role") or prefs.get("careerGoal")
+        if target_role:
+            parts.append(f"Target Role: {target_role}")
+
+        # Skills — merge resume.skills + prefs skills
+        skills = resume.skills or []
+        pref_skills = prefs.get("skills", [])
+        if isinstance(pref_skills, list):
+            skills = list(dict.fromkeys(skills + pref_skills))  # deduplicate
+        if skills:
+            parts.append(f"Skills: {', '.join(skills[:15])}")
+
+        # Experience
+        exp = prefs.get("experience_years")
+        if exp:
+            parts.append(f"Experience: {exp} years")
+
+        # ATS score
+        ats = prefs.get("ats_score")
+        if ats:
+            parts.append(f"ATS Score: {ats}%")
+
+        # Missing skills
+        missing = prefs.get("missing_skills", [])
+        if missing:
+            parts.append(f"Missing Skills: {', '.join(missing[:5])}")
+
+        # Location
+        location = prefs.get("location")
+        if location:
+            parts.append(f"Location: {location}")
+
+        return "\n".join(parts) if parts else "No profile data available."
 
     async def _chat_advice(self, state: BrainState, query: str, start: float) -> BrainResult:
         clean_query = re.sub(r'^career advice:\s*', '', query, flags=re.IGNORECASE).strip()

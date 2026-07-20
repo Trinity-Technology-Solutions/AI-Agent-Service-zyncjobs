@@ -8,13 +8,7 @@ from recruitment_ai.brains.base import Brain, BrainState, BrainResult
 from recruitment_ai.llm import llm_service
 from recruitment_ai.validators.json_validator import validate_json_strict
 from recruitment_ai.prompts import get_prompt, get_system_prompt
-
-SKILL_KEYWORDS = [
-    "python", "java", "javascript", "react", "node", "sql", "aws", "docker",
-    "kubernetes", "git", "linux", "agile", "scrum", "rest", "api", "html",
-    "css", "typescript", "go", "rust", "c++", "c#", ".net", "spring",
-    "django", "flask", "fastapi", "postgresql", "mongodb", "redis",
-]
+from recruitment_ai.brains.candidate.skill_keywords import SKILL_KEYWORDS, extract_matched_skills
 
 
 class ATSBrain(Brain):
@@ -56,18 +50,26 @@ class ATSBrain(Brain):
             )
 
     def _rule_based_ats(self, resume: str, jd: str) -> dict:
-        resume_lower = resume.lower()
-        jd_lower = jd.lower()
-        jd_skills = set(re.findall(rf"\b({'|'.join(SKILL_KEYWORDS)})\b", jd_lower))
-        resume_skills = set(re.findall(rf"\b({'|'.join(SKILL_KEYWORDS)})\b", resume_lower))
+        resume_skills = extract_matched_skills(resume)
+        jd_skills = extract_matched_skills(jd)
         matched = list(jd_skills & resume_skills)
         missing = list(jd_skills - resume_skills)
-        match_pct = int(len(matched) / len(jd_skills) * 100) if jd_skills else 100
-        has_sections = all(s in resume_lower for s in ["experience", "education", "skills"])
+        n_jd = len(jd_skills)
+        if n_jd == 0:
+            match_pct = 0  # nothing to match against
+        else:
+            match_pct = round(len(matched) / n_jd * 100)
+        has_sections = all(s in resume.lower() for s in ["experience", "education", "skills"])
         formatting = 80 if has_sections else 50
         completeness = 90 if len(resume) > 1000 else 60
-        exp_relevance = 70 if matched else 30
-        ats_score = int(match_pct * 0.4 + formatting * 0.2 + completeness * 0.2 + exp_relevance * 0.2)
+        total_resume_skills = len(resume_skills)
+        exp_relevance = (
+            80 if total_resume_skills >= 10 else
+            70 if total_resume_skills >= 5 else
+            50 if total_resume_skills >= 2 else
+            30
+        )
+        ats_score = round(match_pct * 0.4 + formatting * 0.2 + completeness * 0.2 + exp_relevance * 0.2)
         suggestions = []
         if missing:
             suggestions.append(f"Add missing keywords: {', '.join(missing[:5])}")

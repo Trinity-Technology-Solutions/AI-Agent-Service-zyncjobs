@@ -14,6 +14,10 @@ EMBED_MODEL = "bge-m3"          # architecture doc: BGE-M3 embeddings
 EMBED_FALLBACK = "nomic-embed-text"
 SCORE_THRESHOLD = 0.45          # cosine distance — lower = more relevant
 
+# Dimension must match the embed model output
+# nomic-embed-text (Ollama/dev) = 768, Titan Embed v2 (Bedrock/prod) = 1024
+EMBED_DIM = 1024 if settings.LLM_PROVIDER == "bedrock" else 768
+
 
 @dataclass
 class VectorDoc:
@@ -52,7 +56,7 @@ class VectorStore:
             if self.collection_name not in existing:
                 await self._qdrant.create_collection(
                     collection_name=self.collection_name,
-                    vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
+                    vectors_config=VectorParams(size=EMBED_DIM, distance=Distance.COSINE),
                 )
                 logger.info("Qdrant collection created: %s", self.collection_name)
 
@@ -88,8 +92,7 @@ class VectorStore:
     # ── Embed ──────────────────────────────────────────────────────────────
 
     async def embed(self, text: str) -> list[float]:
-        """Embed using BGE-M3 (Qdrant path) or nomic-embed-text (ChromaDB path)."""
-        model = self._embed_model if self._qdrant_available else EMBED_FALLBACK
+        """Embed via the active LLM provider (Ollama dev / Bedrock prod)."""
         return await llm_service.embed(text=text)
 
     # ── Search ─────────────────────────────────────────────────────────────

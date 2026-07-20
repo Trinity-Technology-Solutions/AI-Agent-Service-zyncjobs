@@ -89,6 +89,9 @@ INTENT_PATTERNS: dict[str, list[str]] = {
         r"write.*cover letter",
         r"cover letter.*for",
     ],
+    "ASSESSMENT_MENTOR": [
+        r"^mentor:",
+    ],
     "CAREER_ADVICE": [
         r"career.*advice",
         r"career.*path",

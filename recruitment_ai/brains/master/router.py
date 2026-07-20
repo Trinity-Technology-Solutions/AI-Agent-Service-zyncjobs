@@ -34,7 +34,7 @@ router.register_many(
 router.register("ATS_SCORE", ats_brain)
 router.register("JOB_MATCH", job_matching_brain)
 router.register_many(
-    ["CAREER_ADVICE", "SKILL_ASSESSMENT", "INTERVIEW_PREP", "RESUME_BUILDER"],
+    ["CAREER_ADVICE", "SKILL_ASSESSMENT", "INTERVIEW_PREP", "RESUME_BUILDER", "ASSESSMENT_MENTOR"],
     career_brain,
 )
 router.register("CAREER_ROADMAP", career_roadmap_brain)

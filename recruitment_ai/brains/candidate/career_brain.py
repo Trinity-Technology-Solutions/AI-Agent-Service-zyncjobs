@@ -30,7 +30,9 @@ class CareerBrain(Brain):
         query = state.request.query or state.query or ""
         ctx = state.context_data
 
-        if intent == "SKILL_ASSESSMENT":
+        if intent == "ASSESSMENT_MENTOR":
+            return await self._assessment_mentor(state, query, start)
+        elif intent == "SKILL_ASSESSMENT":
             return await self._skill_assessment(state, ctx, start)
         elif intent == "INTERVIEW_PREP":
             return await self._interview_prep(state, ctx, start)
@@ -100,23 +102,34 @@ class CareerBrain(Brain):
         return "\n".join(parts) if parts else "No profile data available."
 
     async def _chat_advice(self, state: BrainState, query: str, start: float) -> BrainResult:
-        clean_query = re.sub(r'^career advice:\s*', '', query, flags=re.IGNORECASE).strip()
-        user_context = self._build_user_context(state)
-        history = state.context_data.user_preferences.get("history", [])
+        clean_query = re.sub(r'^(career advice|mentor):\s*', '', query, flags=re.IGNORECASE).strip()
+        prefs = state.context_data.user_preferences
+        history = prefs.get("history", [])
         history_text = ""
         for turn in history[-6:]:
-            role = turn.get("role", "user")
-            content = turn.get("content", "")
-            history_text += f"{role}: {content}\n"
-        rag = state.retrieved_documents.chunks or []
-        rag_text = "\n".join(c.get("text", "") for c in rag[:3]) if rag else ""
-        system = get_prompt("career_chat_system", user_context=user_context)
-        parts = []
-        if history_text:
-            parts.append(f"Previous conversation:\n{history_text}")
-        parts.append(f"User: {clean_query}")
-        if rag_text:
-            parts.append(f"Relevant context:\n{rag_text}")
+            history_text += f"{turn.get('role', 'user')}: {turn.get('content', '')}\n"
+
+        system_override = prefs.get("systemPrompt")
+
+        if system_override:
+            # Caller controls full context — skip RAG, use systemPrompt directly
+            system = system_override
+            parts = []
+            if history_text:
+                parts.append(f"Previous conversation:\n{history_text}")
+            parts.append(f"User: {clean_query}")
+        else:
+            rag = state.retrieved_documents.chunks or []
+            rag_text = "\n".join(c.get("text", "") for c in rag[:3]) if rag else ""
+            user_context = self._build_user_context(state)
+            system = get_prompt("career_chat_system", user_context=user_context)
+            parts = []
+            if history_text:
+                parts.append(f"Previous conversation:\n{history_text}")
+            parts.append(f"User: {clean_query}")
+            if rag_text:
+                parts.append(f"Relevant context:\n{rag_text}")
+
         prompt = "\n\n".join(parts)
         try:
             reply = await llm_service.generate(
@@ -125,12 +138,76 @@ class CareerBrain(Brain):
             )
             reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
             return BrainResult(
-                response={"reply": reply, "intent": "CAREER_ADVICE", "rag_used": bool(rag_text)},
+                response={"reply": reply, "intent": "CAREER_ADVICE"},
                 execution_time=time.perf_counter() - start,
             )
         except Exception:
             return BrainResult(
                 response={"reply": "I'm having trouble right now. Please try again in a moment.", "intent": "CAREER_ADVICE"},
+            )
+
+    async def _assessment_mentor(self, state: BrainState, query: str, start: float) -> BrainResult:
+        clean_query = re.sub(r'^mentor:\s*', '', query, flags=re.IGNORECASE).strip()
+        prefs = state.context_data.user_preferences
+
+        skill = prefs.get("skill", "")
+        score = prefs.get("score", 0)
+        questions = prefs.get("questions", [])  # list of {num, question, options, userAnswer, correctAnswer, isCorrect}
+
+        # Find which question number user is asking about
+        num_match = re.search(
+            r'\b(?:q(?:uestion)?\s*#?\s*(\d+)|(\d+)(?:st|nd|rd|th)?\s*(?:question|q\b))',
+            clean_query, re.IGNORECASE
+        )
+        target_q = None
+        if num_match:
+            qnum = int(num_match.group(1) or num_match.group(2))
+            # num may be int or str depending on JSON serialisation
+            target_q = next(
+                (q for q in questions if str(q.get("num", "")) == str(qnum)),
+                None
+            )
+
+        if target_q:
+            system = "You are an AI assessment mentor. Explain mistakes clearly and educationally. Never mention ZyncJobs platform features."
+            prompt = (
+                f"Assessment: {skill} | Score: {score}%\n\n"
+                f"Question {target_q['num']}: {target_q['question']}\n"
+                f"Options: {', '.join(target_q.get('options', []))}\n"
+                f"Candidate answered: {target_q['userAnswer']} {'✓' if target_q.get('isCorrect') else '✗'}\n"
+                f"Correct answer: {target_q['correctAnswer']}\n\n"
+                f"User asks: {clean_query}\n\n"
+                f"Explain:\n1. Why the candidate's answer is {'correct' if target_q.get('isCorrect') else 'incorrect'}.\n"
+                f"2. Why '{target_q['correctAnswer']}' is the correct answer.\n"
+                f"3. Give a short learning tip."
+            )
+        else:
+            # General mentor question — list all wrong answers as context
+            wrong = [q for q in questions if not q.get("isCorrect") and q.get("correctAnswer") != "Open ended"]
+            wrong_summary = "\n".join(
+                f"Q{q['num']}: {q['question']} | Your answer: {q['userAnswer']} | Correct: {q['correctAnswer']}"
+                for q in wrong
+            ) or "None"
+            system = "You are an AI assessment mentor. Be specific and educational. Never mention ZyncJobs platform features."
+            prompt = (
+                f"Assessment: {skill} | Score: {score}%\n\n"
+                f"Wrong answers:\n{wrong_summary}\n\n"
+                f"User asks: {clean_query}"
+            )
+
+        try:
+            reply = await llm_service.generate(
+                brain_name="assessment_mentor", prompt=prompt, system=system,
+                temperature=0.4, max_tokens=600,
+            )
+            reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
+            return BrainResult(
+                response={"reply": reply, "intent": "ASSESSMENT_MENTOR"},
+                execution_time=time.perf_counter() - start,
+            )
+        except Exception:
+            return BrainResult(
+                response={"reply": "I'm having trouble right now. Please try again.", "intent": "ASSESSMENT_MENTOR"},
             )
 
     async def _career_advice(self, state: BrainState, ctx, start: float) -> BrainResult:

@@ -46,9 +46,11 @@ class ChatbotBrain(Brain):
 
         rag_chunks = state.retrieved_documents.chunks or []
 
-        if not rag_chunks:
-            history_list = state.context_data.user_preferences.get("history", [])
-            system_override = state.context_data.user_preferences.get("systemPrompt")
+        history_list = state.context_data.user_preferences.get("history", [])
+        system_override = state.context_data.user_preferences.get("systemPrompt")
+
+        # If caller supplied a systemPrompt, always use it directly (skip RAG)
+        if system_override or not rag_chunks:
             reply = await self._general_answer(query, history_list, system_override)
             return BrainResult(
                 response={"reply": reply, "sources": [], "intent": "ANSWERED"},

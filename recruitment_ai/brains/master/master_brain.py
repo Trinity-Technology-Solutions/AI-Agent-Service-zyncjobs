@@ -29,9 +29,26 @@ class MasterBrain:
     def brains(self) -> dict:
         return router.all_brains
 
+    # Intents that produce structured JSON — not conversational replies
+    _STRUCTURED_INTENTS = {
+        "RESUME_EDIT", "RESUME_BUILDER", "RESUME_PARSER",
+        "ATS_SCORE", "JOB_MATCH", "JD_GENERATOR", "JOB_PARSER",
+        "SKILL_ASSESSMENT", "SKILL_GAP", "CAREER_ROADMAP",
+        "INTERVIEW_PREP", "COVER_LETTER",
+        "RECRUITER_SEARCH", "RECRUITER_SHORTLIST",
+    }
+
     async def execute(self, state: BrainState) -> BrainState:
         state = await intent_classifier.classify(state)
         intent = state.intent or "CHAT"
+
+        # If caller supplied a systemPrompt (chat mode) and the classifier picked
+        # a structured-data intent, force CHAT so the brain returns a conversational reply
+        has_system_prompt = bool(state.context_data.user_preferences.get("systemPrompt"))
+        if has_system_prompt and intent in self._STRUCTURED_INTENTS:
+            intent = "CHAT"
+            state.intent = "CHAT"
+
         brain = router.get(intent)
 
         execution_id = execution_logger.log_start(state)

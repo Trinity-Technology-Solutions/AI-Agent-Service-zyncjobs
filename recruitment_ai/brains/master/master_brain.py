@@ -35,7 +35,7 @@ class MasterBrain:
         "ATS_SCORE", "JOB_MATCH", "JD_GENERATOR", "JOB_PARSER",
         "SKILL_ASSESSMENT", "SKILL_GAP", "CAREER_ROADMAP",
         "INTERVIEW_PREP", "COVER_LETTER",
-        "RECRUITER_SEARCH", "RECRUITER_SHORTLIST",
+        "RECRUITER_SEARCH", "RECRUITER_SHORTLIST", "RANKING",
     }
 
     async def execute(self, state: BrainState) -> BrainState:

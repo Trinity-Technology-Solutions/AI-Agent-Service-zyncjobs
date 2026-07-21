@@ -26,6 +26,7 @@ INTENT_REQUIRED_FIELDS = {
     "COVER_LETTER": ["content"],
     "RECRUITER": ["candidates", "summary"],
     "RECRUITER_SHORTLIST": ["candidates", "rankings"],
+    "RANKING": ["overall_score", "skills_score"],
 }
 
 REQUIRED_REPLY_FIELDS = {"reply", "sources"}

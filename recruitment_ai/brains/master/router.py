@@ -41,6 +41,6 @@ router.register("CAREER_ROADMAP", career_roadmap_brain)
 router.register("SKILL_GAP", skill_gap_brain)
 router.register("COVER_LETTER", cover_letter_brain)
 router.register_many(
-    ["RECRUITER", "RECRUITER_SEARCH", "RECRUITER_SHORTLIST"],
+    ["RECRUITER", "RECRUITER_SEARCH", "RECRUITER_SHORTLIST", "RANKING"],
     recruiter_brain,
 )

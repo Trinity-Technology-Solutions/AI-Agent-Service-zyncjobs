@@ -7,42 +7,76 @@ from recruitment_ai.brains.base import Brain, BrainState, BrainResult
 from recruitment_ai.llm import llm_service
 
 RESUME_EDIT_SYSTEM = """You are a professional resume writer. Return ONLY the requested content.
-No explanations, no markdown, no code fences, no bullet symbols unless part of the output format."""
+No explanations, no markdown, no code fences, no bullet symbols, no labels, no prefixes, no placeholders like [X] or [Y]."""
 SYSTEM = RESUME_EDIT_SYSTEM
 
 SECTION_PROMPTS = {
     "summary": {
         "generate": """Write a professional summary (2-3 sentences) for a {role}.
 Candidate context: {context}
-If the context has specific technologies/skills, use ONLY those. If it only has a role title (e.g. 'Backend Developer, Fresher'), you may suggest relevant technologies commonly used in that role.
-Return ONLY the summary text — no labels, no prefixes, no placeholders.""",
-        "rewrite": """Rewrite this professional summary to be more impactful:\n{content}\nReturn ONLY the rewritten summary text.""",
-        "professional": """Rewrite this professional summary in a formal, professional tone:\n{content}\nReturn ONLY the rewritten summary.""",
-        "shorten": """Shorten this professional summary to 2-3 concise sentences:\n{content}\nReturn ONLY the shortened version.""",
-        "friendly": """Rewrite this professional summary in a friendly, conversational tone:\n{content}\nReturn ONLY the rewritten summary.""",
+Use ONLY actual skills and experience from the context. Never invent or add technologies not mentioned. If the context has no specific data, write a generic high-quality summary for the given role.
+Return ONLY the summary text — no labels, no prefixes, no placeholders, no quotes.""",
+        "rewrite": """Rewrite this professional summary to be more impactful. Preserve all original technologies and skills.
+{content}
+Return ONLY the rewritten summary text.""",
+        "professional": """Rewrite this professional summary in a formal, professional tone. Preserve all original content.
+{content}
+Return ONLY the rewritten summary.""",
+        "shorten": """Shorten this professional summary to 2-3 concise sentences. Preserve key skills and role.
+{content}
+Return ONLY the shortened version.""",
+        "friendly": """Rewrite this professional summary in a friendly, conversational tone.
+{content}
+Return ONLY the rewritten summary.""",
     },
     "experience": {
-        "improve": """Improve this resume bullet point. Make it quantifiable, specific, and impactful.\nUse past tense action verbs. Include metrics where possible.\nCRITICAL: Preserve ALL original technologies and tools exactly as written. Do NOT add any new programming languages, frameworks, or tools.\n\nOriginal: {content}\nReturn ONLY the improved version.""",
-        "quantify": """Add a specific metric or number to this resume bullet point.\nCRITICAL: Preserve ALL original technologies and tools exactly as written. Do NOT add or change any technologies.\n\nOriginal: {content}\nReturn ONLY the improved version.""",
-        "generate": """Generate 3-4 resume bullet points for {content}.\nEach bullet must be quantifiable, start with a past-tense action verb.\nIf the input has specific technologies, use ONLY those. If it only mentions a role (e.g. 'Backend Developer, Fresher'), suggest commonly used technologies relevant to that role.
-Return one bullet per line.""",
+        "improve": """Improve this resume bullet point. Make it quantifiable, specific, and impactful. Use past tense action verbs. Include metrics where possible.
+CRITICAL: Preserve ALL original technologies and tools exactly as written. Do NOT add any new programming languages, frameworks, or tools.
+
+Original: {content}
+Return ONLY the improved version — one sentence, no labels.""",
+        "quantify": """Add a specific metric or number to this resume bullet point. Make it measurable and impactful while keeping the original meaning.
+CRITICAL: Preserve ALL original technologies and tools exactly as written. Do NOT add or change any technologies.
+
+Original: {content}
+Return ONLY the quantified version — one sentence, no labels.""",
+        "generate": """Generate 2-3 resume bullet points for {content}.
+Each bullet must be quantifiable, start with a past-tense action verb.
+Use ONLY technologies mentioned in the content. If the input has no specific technologies, keep the bullets general.
+Return one bullet per line, no numbering.""",
     },
     "projects": {
-        "improve": """Improve this project bullet point:\n{content}\nCRITICAL: Preserve ALL original technologies exactly as written. Do NOT add any new ones.\nReturn ONLY the improved version.""",
-        "generate": """Generate 3-4 bullet points describing project work for: {content}\nIf the content has specific technologies, use ONLY those. If it only mentions a role or project name, suggest commonly used technologies for that type of project.\nReturn one per line.""",
+        "improve": """Improve this project bullet point to be more specific and impactful:
+{content}
+CRITICAL: Preserve ALL original technologies exactly as written. Do NOT add any new ones.
+Return ONLY the improved version.""",
+        "generate": """Generate 2-3 bullet points describing project work for: {content}
+Use ONLY technologies mentioned in the content. If none are mentioned, keep bullets general.
+Return one per line, no numbering.""",
     },
     "skills": {
-        "generate": """List relevant technical and soft skills for a {role} candidate.\nCurrent profile: {content}\nIf context has specific skills, use ONLY those. If it only has a role title, suggest common skills for that role.\nReturn as a comma-separated list.""",
-        "find_missing": """Given these current skills: {content}\nTarget role: {role}\nSuggest 5-8 complementary skills relevant to the target role that build on the given skills.\nReturn as a comma-separated list.""",
+        "generate": """List relevant technical and soft skills for a {role} candidate.
+Current profile: {content}
+Use ONLY skills mentioned in the context. If the context has no specific skills, suggest common skills for that role (max 10).
+Return as a comma-separated list — no labels, no numbering.""",
+        "find_missing": """Given these current skills: {content}
+Target role: {role}
+Suggest 5-8 complementary skills relevant to the target role that build on the given skills.
+Return as a comma-separated list.""",
     },
     "education": {
-        "generate": """Suggest 2-3 relevant education entries for a candidate targeting: {content}\nEach entry: Degree Name, Institution Name\nReturn one per line.""",
+        "generate": """Suggest 2-3 relevant education entries for a candidate targeting: {content}
+Each entry: Degree Name, Institution Name
+Return one per line, no numbering.""",
     },
     "languages": {
-        "generate": """List 5 common languages found on professional resumes.\nReturn as a comma-separated list.""",
+        "generate": """List 5 common languages found on professional resumes.
+Return as a comma-separated list.""",
     },
     "certifications": {
-        "generate": """Suggest 3 certifications relevant for a {role} candidate. Target: {content}\nEach line: Certification Name, Issuing Organization""",
+        "generate": """Suggest 3 certifications relevant for a {role} candidate. Target: {content}
+Each line: Certification Name, Issuing Organization
+Return one per line, no numbering.""",
     },
 }
 
@@ -138,7 +172,13 @@ class ResumeEditBrain(Brain):
         return actions[action].format(role=role, content=content, context=content)
 
     async def _score_advice(self, content: str) -> BrainResult:
-        prompt = f"""Analyze this resume score context and give 3-4 specific improvement tips:\n\n{content}\n\nReturn one tip per line as plain text."""
+        prompt = f"""Analyze this resume and give 3-4 specific, actionable improvement tips.
+Focus on: missing sections, weak bullet points, skill gaps, formatting issues, and ATS optimization.
+Be concrete — mention specific skills, sections, or metrics whenever possible.
+
+Resume context: {content}
+
+Return one tip per line as plain text. No labels, no numbering."""
         try:
             result = await llm_service.generate(
                 brain_name="resume_edit", prompt=prompt, system=SYSTEM,

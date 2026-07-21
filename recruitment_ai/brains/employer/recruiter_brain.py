@@ -19,12 +19,17 @@ class RecruiterBrain(Brain):
         query = state.request.query or state.query or ""
         ctx = state.context_data
 
-        has_structured_context = bool(ctx.job.title or ctx.job.description or ctx.company.name or state.context.get("candidates"))
+        has_structured_context = bool(
+            ctx.job.title or ctx.job.description or ctx.company.name
+            or state.context.get("candidates") or state.context.get("candidate") or state.context.get("job")
+        )
         if not has_structured_context:
             return await self._chat_recruiter(query, state.context_data.user_preferences.get("history", []), start)
 
         if "shortlist" in query.lower() or "evaluate" in query.lower():
             return await self._shortlist(state.context, start)
+        if "score" in query.lower() or "rank" in query.lower():
+            return await self._score_candidate(state, start)
         return await self._search(query, state.context, start)
 
     async def _chat_recruiter(self, query: str, history: list, start: float) -> BrainResult:
@@ -91,6 +96,47 @@ class RecruiterBrain(Brain):
             return BrainResult(
                 response={"shortlisted": [], "top_candidate_id": "", "summary": "Shortlisting evaluation unavailable"},
                 metadata={"error": str(e)},
+            )
+
+    async def _score_candidate(self, state: BrainState, start: float) -> BrainResult:
+        prefs = state.context_data.user_preferences
+        context = state.context
+        job_data = context.get("job") or prefs.get("job") or {}
+        job_desc = job_data.get("description") or job_data.get("jobDescription") or state.context_data.job.description or ""
+        candidate = context.get("candidate") or context.get("candidates", [{}])[0] if context.get("candidates") else prefs.get("candidate") or {}
+        if isinstance(candidate, list):
+            candidate = candidate[0] if candidate else {}
+        if not candidate or not candidate.get("resume"):
+            candidate = {"resume": context.get("candidate_resume", "") or prefs.get("candidate_resume", "")}
+        prompt = f"""Score this candidate for the job.
+
+Job: {job_desc[:2000]}
+Candidate: {json.dumps(candidate)[:2000]}
+
+Return JSON with:
+{{"overallScore": 0-100, "skillsScore": 0-100, "experienceScore": 0-100,
+  "shouldReject": false, "reasons": [], "feedback": "",
+  "recommendation": "strong|consider|reject",
+  "matchingSkills": [], "missingSkills": [],
+  "summary": "", "breakdown": {{"skill_weight": 0, "experience_weight": 0, "education_weight": 0, "location_weight": 0}}
+}}"""
+        system = get_system_prompt("recruiter")
+        try:
+            result = await llm_service.generate(
+                brain_name="recruiter", prompt=prompt, system=system,
+                temperature=0.1, max_tokens=1024,
+            )
+            parsed = validate_json_strict(result, "object") or {}
+            if "overallScore" in parsed or "score" in parsed:
+                return BrainResult(response=parsed, execution_time=time.perf_counter() - start)
+            return BrainResult(
+                response={"overallScore": 50, "skillsScore": 50, "reasons": ["AI evaluation unavailable"]},
+                execution_time=time.perf_counter() - start,
+            )
+        except Exception as e:
+            return BrainResult(
+                response={"overallScore": 50, "skillsScore": 50, "reasons": [str(e)]},
+                metadata={"fallback": True, "error": str(e)},
             )
 
     def _fallback_search(self, context: dict) -> dict:

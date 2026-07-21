@@ -132,6 +132,13 @@ INTENT_PATTERNS: dict[str, list[str]] = {
         r"^skill gap:",
         r"missing skills.*senior",
     ],
+    "RANKING": [
+        r"rank.*candidate",
+        r"candidate.*rank",
+        r"ai.*score.*candidate",
+        r"hybrid.*score.*candidate",
+        r"score.*candidate.*job",
+    ],
     "CAREER_ROADMAP": [
         r"career.*roadmap",
         r"roadmap.*from",

@@ -105,6 +105,9 @@ FIELD RULES:
 - tools: array of strings — Git, Docker, Figma, Jira, Postman
 - workExperiences: array of objects with jobTitle, company, date, descriptions
 - educations: array of objects with school, degree, date, grade
+- projects: array of objects with name, description
+- certifications: array of objects with name, provider, date
+- competitions: array of strings
 
 Return ONLY valid JSON. No extra text.
 

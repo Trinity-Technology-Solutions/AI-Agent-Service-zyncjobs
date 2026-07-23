@@ -63,7 +63,10 @@ class ResumeParserBrain(Brain):
     def _extract_name(self, content: str) -> str:
         lines = [l.strip() for l in content.split("\n") if l.strip()]
         for line in lines[:5]:
-            if re.match(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}$", line):
+            normalized = line
+            if line == line.upper() and len(line) > 1:
+                normalized = line.title()
+            if re.match(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z.]*){1,3}$", normalized):
                 return line
         return ""
 

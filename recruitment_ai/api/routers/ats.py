@@ -12,6 +12,14 @@ router = APIRouter(prefix="/ai/ats", tags=["ats"])
 @router.post("/analyze", response_model=dict)
 async def ats_analyze(resume_text: str, job_description: str, user: dict = Depends(get_current_user)):
     """Analyze a resume against a job description and return ATS score."""
+    # Validate job description is not empty before processing
+    if not job_description.strip():
+        return {
+            "success": False,
+            "ats_score": 0,
+            "error": "Job description cannot be empty",
+        }
+
     state = {
         "user": {"id": user.get("user_id"), "email": user.get("email"), "role": user.get("role", "candidate")},
         "query": f"ATS score check for resume",

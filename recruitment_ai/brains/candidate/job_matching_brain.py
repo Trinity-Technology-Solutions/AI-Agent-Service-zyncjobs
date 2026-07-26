@@ -8,6 +8,8 @@ from recruitment_ai.brains.base import Brain, BrainState, BrainResult
 from recruitment_ai.llm import llm_service
 from recruitment_ai.validators.json_validator import validate_json_strict
 from recruitment_ai.brains.candidate.skill_keywords import SKILL_KEYWORDS, extract_matched_skills
+from recruitment_ai.brains.candidate.skill_keywords import SKILL_VARIATIONS, SKILL_KEYWORDS as DEFAULT_SKILL_KEYWORDS
+
 
 JOB_MATCH_SYSTEM = """You are a job matching expert. Evaluate candidate profiles against job requirements.
 Return ONLY valid JSON. No extra text, no markdown, no explanation."""
@@ -43,7 +45,6 @@ Return JSON with:
 
 Only return valid JSON."""
 
-
 class JobMatchingBrain(Brain):
     def __init__(self):
         super().__init__()
@@ -70,13 +71,33 @@ class JobMatchingBrain(Brain):
                 max_tokens=1024,
             )
             parsed = validate_json_strict(result, "object") or {}
-            return BrainResult(response=parsed, metadata={"model": "llm"}, execution_time=time.perf_counter() - start)
+            
+            # Ensure we have valid parsed response; if not, fall back to rule-based
+            if self._is_valid_parsed_result(parsed):
+                response = parsed
+                model_used = "llm"
+            else:
+                response = self._rule_based_match(candidate_text, job_text)
+                model_used = "rule_based"
+                
+            return BrainResult(response=response, metadata={"model": model_used}, execution_time=time.perf_counter() - start)
         except Exception as e:
             return BrainResult(
                 response=self._rule_based_match(candidate_text, job_text),
                 metadata={"model": "rule_based", "fallback_reason": str(e)},
                 execution_time=time.perf_counter() - start,
             )
+
+    def _is_valid_parsed_result(self, parsed: any) -> bool:
+        """Check if parsed result is valid and contains expected fields."""
+        if not parsed or not isinstance(parsed, dict):
+            return False
+        if parsed.get("error"):
+            return False
+        
+        # Check for essential match fields
+        essential_fields = ["match_score", "skill_match", "experience_match", "recommendation"]
+        return all(field in parsed for field in essential_fields)
 
     def _rule_based_match(self, candidate: str, job: str) -> dict:
         cand_skills = extract_matched_skills(candidate)
@@ -85,16 +106,29 @@ class JobMatchingBrain(Brain):
         matched = list(required & cand_skills)
         missing = list(required - cand_skills)
         match_pct = round(len(matched) / len(required) * 100) if required else 0
+        
+        # Enhanced experience matching
         exp_match = re.search(r"(\d+)\+?\s*years?", job.lower())
         years_req = int(exp_match.group(1)) if exp_match else 0
-        exp_score = 100 if years_req == 0 else max(0, 100 - years_req * 10)
-        score = round(match_pct * 0.6 + exp_score * 0.4)
+        
+        # Calculate experience score
+        if years_req == 0:
+            exp_score = 85  # No specific requirement - pass
+        elif years_req <= 2:
+            exp_score = max(0, 75 - years_req * 5)  # Some deduction for recent requirement
+        elif years_req <= 5:
+            exp_score = max(0, 60 - years_req * 5)  # Moderate deduction
+        else:
+            exp_score = max(0, 40 - years_req * 3)  # Higher deduction for senior roles
+            
+        # Calculate total score with better weighting
+        score = round(match_pct * 0.65 + exp_score * 0.35)
 
         if score >= 80:
             rec = "strong_match"
-        elif score >= 60:
+        elif score >= 65:
             rec = "good_match"
-        elif score >= 40:
+        elif score >= 45:
             rec = "potential_match"
         else:
             rec = "poor_match"

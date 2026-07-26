@@ -43,6 +43,9 @@ class JobParserBrain(Brain):
                 max_tokens=1024,
             )
             parsed = validate_json_strict(result, "object") or {}
+            # Map job_title to title for consistency
+            if "job_title" in parsed and "title" not in parsed:
+                parsed["title"] = parsed["job_title"]
             return BrainResult(
                 response=parsed,
                 metadata={"parser": "llm"},

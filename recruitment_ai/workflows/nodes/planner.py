@@ -14,8 +14,13 @@ async def planner_node(state: BrainState) -> BrainState:
 
     state.metadata["planned_brain"] = intent
 
+    # Personalized intents must NOT share cache across users
+    PERSONAL_INTENTS = {"CAREER_ADVICE", "SKILL_GAP", "CAREER_ROADMAP", "SKILL_ASSESSMENT", "INTERVIEW_PREP", "ATS_SCORE"}
+
     if query and intent:
-        cached = await cache_service.get(intent, query)
+        user_id = state.user_id or state.user.id or ""
+        cache_query = f"{user_id}:{query}" if intent in PERSONAL_INTENTS and user_id else query
+        cached = await cache_service.get(intent, cache_query)
         if cached:
             state.result = cached
             state.metadata["cache_hit"] = True

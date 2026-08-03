@@ -8,29 +8,9 @@ from recruitment_ai.brains.base import Brain, BrainState, BrainResult
 from recruitment_ai.llm import llm_service
 from recruitment_ai.validators.json_validator import validate_json_strict
 
-SKILL_GAP_SYSTEM = """You are a technical skill gap analyst.
-Return ONLY valid JSON as specified. No extra text, no markdown, no explanation."""
+from recruitment_ai.prompts import get_system_prompt, get_prompt as _get_prompt
 
-SKILL_GAP_PROMPT = """Analyze the skill gap between a candidate's current skills and their target role.
-
-Current Role: {current_role}
-Target Role: {target_role}
-Current Skills: {current_skills}
-Experience Years: {experience_years}
-
-Return JSON with:
-{{
-  "missing_skills": [
-    {{"skill": "skill_name", "priority": "critical|important|nice_to_have", "reason": "why needed"}}
-  ],
-  "existing_relevant_skills": ["skill1", "skill2"],
-  "gap_score": 0-100,
-  "learning_resources": [
-    {{"skill": "skill_name", "resource": "Course/Book/Project", "platform": "Coursera|Udemy|YouTube|GitHub", "estimated_weeks": 4}}
-  ],
-  "quick_wins": ["skill you can learn fast"],
-  "summary": "Brief gap analysis summary"
-}}"""
+SKILL_GAP_SYSTEM = get_system_prompt("skill_gap")
 
 
 class SkillGapBrain(Brain):
@@ -43,7 +23,7 @@ class SkillGapBrain(Brain):
         prefs = ctx.user_preferences
         resume = ctx.resume
 
-        prompt = SKILL_GAP_PROMPT.format(
+        prompt = _get_prompt("skill_gap_prompt",
             current_role=prefs.get("current_role", "Software Engineer"),
             target_role=prefs.get("target_role", state.request.query or "Senior Software Engineer"),
             current_skills=", ".join(resume.skills or prefs.get("current_skills", [])) or "Not specified",

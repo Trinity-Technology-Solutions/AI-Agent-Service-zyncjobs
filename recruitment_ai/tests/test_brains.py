@@ -497,22 +497,22 @@ async def test_zp475_experience_relevance_contributes_to_score():
 @pytest.mark.asyncio
 async def test_zp476_resume_formatting_impacts_score():
     """ZP-476: Verify resume formatting impacts ATS score"""
-    # Well-formatted resume with sections
+    # Well-formatted resume — has all 4 section headers: experience, education, skills, summary
     state1 = BrainState(
-        query="EXPERIENCE\nSenior Developer at TechCorp\n• Built APIs\nEDUCATION\nB.Tech CS\nSKILLS\nPython, React",
+        query="Professional Summary\nSenior Python developer with 5 years experience.\nExperience\nSenior Developer at TechCorp (2020-2024)\n• Built scalable APIs\nEducation\nB.Tech Computer Science, IIT Delhi (2016-2020)\nSkills\nPython, React, Docker, AWS",
         context={"job_description": "Python, React required"},
     )
     result1 = await ats_brain.run(state1)
     formatting1 = result1.response.get("formatting_score", 0)
-    
-    # Poorly formatted resume
+
+    # Poorly formatted resume — no section headers, just a single line
     state2 = BrainState(
-        query="Python React developer TechCorp BTech",
+        query="developer",
         context={"job_description": "Python, React required"},
     )
     result2 = await ats_brain.run(state2)
     formatting2 = result2.response.get("formatting_score", 0)
-    
+
     assert formatting1 > formatting2
 
 

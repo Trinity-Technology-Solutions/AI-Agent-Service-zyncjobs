@@ -49,9 +49,10 @@ class ChatbotBrain(Brain):
         history_list = state.context_data.user_preferences.get("history", [])
         system_override = state.context_data.user_preferences.get("systemPrompt")
 
-        # If caller supplied a systemPrompt, always use it directly (skip RAG)
+        # If caller supplied a systemPrompt, inject user profile and answer directly
         if system_override or not rag_chunks:
-            reply = await self._general_answer(query, history_list, system_override)
+            user_profile = self._build_user_profile(state)
+            reply = await self._general_answer(query, history_list, system_override, user_profile)
             return BrainResult(
                 response={"reply": reply, "sources": [], "intent": "ANSWERED"},
                 execution_time=time.perf_counter() - start,
@@ -137,8 +138,10 @@ class ChatbotBrain(Brain):
         except Exception:
             return "I'm having trouble processing your request right now. Please try again."
 
-    async def _general_answer(self, query: str, history: list, system_override: str | None = None) -> str:
+    async def _general_answer(self, query: str, history: list, system_override: str | None = None, user_profile: str = "") -> str:
         system = system_override or get_system_prompt("chatbot")
+        if user_profile and system_override:
+            system = system_override + f"\n\nCandidate Profile:\n{user_profile}"
         history_text = ""
         for turn in history[-6:]:
             role = turn.get("role", "user")

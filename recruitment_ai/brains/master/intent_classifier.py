@@ -98,11 +98,36 @@ INTENT_PATTERNS: dict[str, list[str]] = {
         r"career.*coach",
         r"career.*plan",
         r"plan.*career",
+        r"plan.*my.*career",
         r"learning.*path",
         r"improve.*resume",
+        r"review.*resume",
+        r"resume.*review",
         r"salary.*tip",
+        r"salary.*advice",
+        r"increase.*salary",
+        r"how.*salary",
+        r"negotiate.*salary",
         r"interview.*prep",
         r"interview.*tip",
+        r"interview.*preparation",
+        r"prepare.*interview",
+        r"how.*get.*job",
+        r"how.*become",
+        r"switch.*career",
+        r"change.*career",
+        r"career.*switch",
+        r"career.*change",
+        r"career.*guidance",
+        r"career.*mentor",
+        r"career.*goal",
+        r"career.*growth",
+        r"career.*develop",
+        r"job.*search.*tip",
+        r"find.*job",
+        r"get.*hired",
+        r"build.*career",
+        r"build.*roadmap",
     ],
     "SKILL_ASSESSMENT": [
         r"skill.*assessment",
@@ -148,8 +173,11 @@ INTENT_PATTERNS: dict[str, list[str]] = {
         r"plan.*become",
     ],
     "INTERVIEW_PREP": [
+        r"^interview:",
         r"mock.*interview",
         r"prepare.*interview",
+        r"interview.*begin",
+        r"interview.*question",
     ],
     "RESUME_PARSER": [
         r"parse.*resume",
@@ -197,6 +225,10 @@ class IntentClassifier:
 
     def _rule_classify(self, query: str) -> str | None:
         """Returns intent if a rule matches, else None."""
+        # INTERVIEW prefix must be checked first — user answers can contain
+        # words that match RECRUITER/SKILL_GAP/etc patterns accidentally
+        if query.lower().startswith("interview:"):
+            return "INTERVIEW_PREP"
         for intent, patterns in self._compiled.items():
             for pattern in patterns:
                 if pattern.search(query):

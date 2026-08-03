@@ -27,14 +27,12 @@ router.register("CHAT", chatbot_brain)
 router.register("JOB_PARSER", job_parser_brain)
 router.register("JD_GENERATOR", jd_generator_brain)
 router.register("RESUME_PARSER", resume_parser_brain)
-router.register_many(
-    ["RESUME_EDIT", "RESUME_BUILDER"],
-    resume_edit_brain,
-)
+router.register("RESUME_EDIT", resume_edit_brain)
+router.register("RESUME_BUILDER", resume_edit_brain)
 router.register("ATS_SCORE", ats_brain)
 router.register("JOB_MATCH", job_matching_brain)
 router.register_many(
-    ["CAREER_ADVICE", "SKILL_ASSESSMENT", "INTERVIEW_PREP", "RESUME_BUILDER", "ASSESSMENT_MENTOR"],
+    ["CAREER_ADVICE", "SKILL_ASSESSMENT", "INTERVIEW_PREP", "ASSESSMENT_MENTOR"],
     career_brain,
 )
 router.register("CAREER_ROADMAP", career_roadmap_brain)

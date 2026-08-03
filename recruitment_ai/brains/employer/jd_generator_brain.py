@@ -4,10 +4,9 @@ Pipeline: BrainState.context_data → LLM → BrainResult
 import time
 from recruitment_ai.brains.base import Brain, BrainState, BrainResult
 from recruitment_ai.llm import llm_service
-from recruitment_ai.prompts import get_prompt
+from recruitment_ai.prompts import get_prompt, get_system_prompt
 
-JD_GENERATOR_SYSTEM = """You are an expert HR professional and technical recruiter.
-Write professional, inclusive, and compelling job descriptions. Return only the job description text."""
+JD_GENERATOR_SYSTEM = get_system_prompt("jd_generator")
 
 
 class JDGeneratorBrain(Brain):
@@ -47,7 +46,7 @@ class JDGeneratorBrain(Brain):
     def _extract_params(self, context: dict, query: str, ctx) -> dict:
         defaults = {
             "title": ctx.job.title or "Software Engineer",
-            "company": ctx.company.name or "ZyncJobs",
+            "company": ctx.company.name or context.get("company", "Our Company"),
             "location": ctx.job.description or "Remote",
             "experience_level": "mid",
             "skills": ", ".join(ctx.job.skills) if ctx.job.skills else "Python, JavaScript, SQL",
@@ -61,26 +60,31 @@ class JDGeneratorBrain(Brain):
         return f"""
 # {params['title']} at {params['company']}
 
-## About the Company
-{params['company']} is a leading technology company.
+## About {params['company']}
+We are a company looking for talented individuals to join our team.
 
 ## About the Role
 We are looking for a {params.get('experience_level', 'mid')} {params['title']} to join our team in {params.get('location', 'Remote')}.
 
 ## Key Responsibilities
-Develop features, Write tests, Code review
+- Develop and maintain features
+- Write clean, tested code
+- Participate in code reviews
 
 ## Required Qualifications
-3+ years experience, CS degree or equivalent
+- 3+ years experience
+- CS degree or equivalent
 
 ## Skills Required
 {params.get('skills', 'Python, JavaScript, SQL')}
 
 ## Benefits
-Health insurance, Remote work, Learning budget
+- Health insurance
+- Remote work options
+- Learning & development budget
 
 ## How to Apply
-Please submit your resume and cover letter.
+Please submit your resume and cover letter to {params['company']}.
 """.strip()
 
 

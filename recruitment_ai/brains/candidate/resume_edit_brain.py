@@ -12,10 +12,19 @@ SYSTEM = RESUME_EDIT_SYSTEM
 
 SECTION_PROMPTS = {
     "summary": {
-        "generate": """Write a professional summary (2-3 sentences) for a {role}.
-Candidate context: {context}
-Use ONLY actual skills and experience from the context. Never invent or add technologies not mentioned. If the context has no specific data, write a generic high-quality summary for the given role.
-Return ONLY the summary text — no labels, no prefixes, no placeholders, no quotes.""",
+        "generate": """You are a professional resume writer. Write exactly 3 different professional summary options.
+
+RULES:
+- Each option must be 2-3 sentences
+- Use the EXACT job role from "Target Role:" in the profile below — do NOT substitute or invent a different role
+- Reference the candidate's actual skills, experience, and achievements from the profile
+- Start each with a strong action-oriented opening
+- No placeholders like [X] or [Y], no labels, no markdown, no numbering
+- Separate each option with "---" on its own line
+- Return ONLY the 3 options, nothing else
+
+Candidate Profile:
+{context}""",
         "rewrite": """Rewrite this professional summary to be more impactful. Preserve all original technologies and skills.
 {content}
 Return ONLY the rewritten summary text.""",
@@ -59,10 +68,20 @@ Return one per line, no numbering.""",
 Current profile: {content}
 Use ONLY skills mentioned in the context. If the context has no specific skills, suggest common skills for that role (max 10).
 Return as a comma-separated list — no labels, no numbering.""",
-        "find_missing": """Given these current skills: {content}
+        "find_missing": """You are a resume skill advisor. List ONLY the skill names that are missing for the target role.
+
+Current skills: {content}
 Target role: {role}
-Suggest 5-8 complementary skills relevant to the target role that build on the given skills.
-Return as a comma-separated list.""",
+
+RULES:
+- Return ONLY short skill names (1-4 words max each), like: Selenium, JIRA, API Testing, SQL
+- Do NOT return sentences, descriptions, or explanations
+- Do NOT include skills already in the current skills list
+- Return exactly 6-8 skills specific to the target role
+- Comma-separated, no numbering, no bullets, no extra text
+- Example output: Selenium, JIRA, TestNG, API Testing, SQL, Agile, Cypress, Postman
+
+Return ONLY the comma-separated skill names:""",
     },
     "education": {
         "generate": """Suggest 2-3 relevant education entries for a candidate targeting: {content}
@@ -81,12 +100,13 @@ Return one per line, no numbering.""",
 }
 
 FALLBACKS = {
-    ("summary", "generate"): lambda ctx: f"Experienced professional with expertise in {ctx.get('role', 'software development')}.",
+    ("summary", "generate"): lambda ctx: f"Experienced {ctx.get('role', 'professional')} with a proven track record of delivering high-quality results. Skilled across the full {ctx.get('role', 'professional')} lifecycle with strong collaboration across cross-functional teams.",
     ("summary", "rewrite"): lambda ctx: ctx.get("content", ""),
     ("summary", "professional"): lambda ctx: ctx.get("content", ""),
     ("summary", "shorten"): lambda ctx: ctx.get("content", ""),
     ("summary", "friendly"): lambda ctx: ctx.get("content", ""),
     ("experience", "improve"): lambda ctx: ctx.get("content", ""),
+    ("experience", "quantify"): lambda ctx: ctx.get("content", ""),
     ("experience", "generate"): lambda ctx: "Implemented key features\nImproved system performance\nCollaborated with cross-functional teams",
     ("projects", "improve"): lambda ctx: ctx.get("content", ""),
     ("projects", "generate"): lambda ctx: "Built core functionality\nOptimized performance\nIntegrated APIs",
@@ -140,20 +160,32 @@ class ResumeEditBrain(Brain):
             state.context.get("role")
             or state.context_data.user_preferences.get("targetRole")
             or _extract_role_from_query(query)
+            or _extract_role_from_query(content)
+            or state.context.get("experienceId")  # SkillGapLearning passes role here
             or section
         )
 
         if section == "resume" and action in ("score_advice", "analyze"):
             return await self._score_advice(content)
 
+        if section == "resume" and action == "optimize":
+            return await self._jd_optimize(content)
+
+        # Normalize action: "improve" maps to "rewrite" for summary (no "improve" in summary prompts)
+        if section == "summary" and action == "improve":
+            action = "rewrite"
+
         prompt = self._build_prompt(section, action, content, role)
         if not prompt:
-            return BrainResult(success=False, response={"reply": "I can help improve your resume. Please try a specific section."})
+            # Graceful fallback — use rewrite/improve fallback instead of error
+            fb = FALLBACKS.get((section, "rewrite")) or FALLBACKS.get((section, "improve"))
+            reply = fb({"content": content, "role": role}) if fb else content or "I can help improve your resume. Please specify a section."
+            return BrainResult(response={"reply": reply, "section": section, "action": action})
 
         try:
             result = await llm_service.generate(
                 brain_name="resume_edit", prompt=prompt, system=SYSTEM,
-                temperature=0.3, max_tokens=512,
+                temperature=0.3, max_tokens=80 if action == "find_missing" else 512,
             )
             result = self._clean(result)
             if not result.strip():
@@ -171,23 +203,73 @@ class ResumeEditBrain(Brain):
             return ""
         return actions[action].format(role=role, content=content, context=content)
 
-    async def _score_advice(self, content: str) -> BrainResult:
-        prompt = f"""Analyze this resume and give 3-4 specific, actionable improvement tips.
-Focus on: missing sections, weak bullet points, skill gaps, formatting issues, and ATS optimization.
-Be concrete — mention specific skills, sections, or metrics whenever possible.
+    async def _jd_optimize(self, content: str) -> BrainResult:
+        prompt = f"""You are a professional resume optimizer. Given the job description and resume below, return a JSON object with these exact keys:
+- "optimized_summary": a 2-3 sentence professional summary tailored to the JD
+- "keywords": array of up to 10 important keywords/skills from the JD not already in the resume
+- "optimized_bullets": array of up to 5 improved experience bullet points incorporating JD keywords
+- "improvements": array of 3 specific actionable tips
 
-Resume context: {content}
+RULES:
+- Use ONLY skills and technologies already in the resume — do NOT invent new ones
+- Keywords must come directly from the JD
+- Return ONLY valid JSON, no markdown, no explanation
 
-Return one tip per line as plain text. No labels, no numbering."""
+Content:
+{content}"""
         try:
             result = await llm_service.generate(
                 brain_name="resume_edit", prompt=prompt, system=SYSTEM,
-                temperature=0.3, max_tokens=512,
+                temperature=0.2, max_tokens=600,
+            )
+            result = self._clean(result)
+            # Extract JSON from result
+            json_match = re.search(r'\{.*\}', result, re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group())
+                return BrainResult(response={"reply": json.dumps(parsed), "section": "resume", "action": "optimize"})
+            raise ValueError("No JSON in response")
+        except Exception:
+            # Fallback: extract keywords from JD text
+            parts = content.split('---')
+            jd_text = parts[0] if parts else content
+            words = re.findall(r'\b[a-zA-Z][a-zA-Z0-9+#.]{2,}\b', jd_text)
+            stop = {'the','and','for','with','that','this','are','you','will','have','from','experience','work','team','role','position','candidate','required','preferred','ability','strong','good','excellent'}
+            freq: dict = {}
+            for w in words:
+                c = w.lower()
+                if c not in stop: freq[c] = freq.get(c, 0) + 1
+            keywords = [w.capitalize() for w, _ in sorted(freq.items(), key=lambda x: -x[1])[:10]]
+            return BrainResult(response={"reply": json.dumps({
+                "optimized_summary": "",
+                "keywords": keywords,
+                "optimized_bullets": [],
+                "improvements": [
+                    f"Add these JD keywords to your skills: {', '.join(keywords[:4])}",
+                    "Quantify achievements with numbers and percentages",
+                    "Start every bullet with a strong past-tense action verb",
+                ],
+            }), "section": "resume", "action": "optimize"})
+
+    async def _score_advice(self, content: str) -> BrainResult:
+        prompt = f"""You are a professional resume reviewer. Analyze this resume snapshot and give 4 specific, actionable improvement tips.
+
+Focus ONLY on what is actually weak or missing based on the data below.
+Be specific — mention exact sections, missing fields, or weak patterns you see.
+Do NOT give generic advice. Do NOT repeat the scores back.
+Return exactly 4 tips, one per line, plain text, no bullets, no numbering.
+
+Resume Snapshot:
+{content}"""
+        try:
+            result = await llm_service.generate(
+                brain_name="resume_edit", prompt=prompt, system=SYSTEM,
+                temperature=0.3, max_tokens=400,
             )
             result = self._clean(result)
             return BrainResult(response={"reply": result, "section": "resume", "action": "score_advice"})
         except Exception:
-            return BrainResult(response={"reply": "Add more quantifiable achievements\nUse stronger action verbs\nEnsure consistent formatting", "section": "resume", "action": "score_advice"})
+            return BrainResult(response={"reply": "Add quantified achievements with numbers and percentages\nStart every bullet with a strong past-tense action verb\nAdd LinkedIn profile and portfolio URL to boost credibility\nExpand experience bullets with specific tools and measurable outcomes", "section": "resume", "action": "score_advice"})
 
     def _clean(self, text: str) -> str:
         text = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL)

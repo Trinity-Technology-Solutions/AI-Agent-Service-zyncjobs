@@ -12,12 +12,11 @@ from recruitment_ai.prompts import get_prompt, get_system_prompt
 CAREER_SYSTEM = get_system_prompt("career")
 CAREER_CHAT_SYSTEM_TPL = get_prompt("career_chat_system", user_context="{user_context}")
 INTERVIEW_SYSTEM = get_system_prompt("interview")
-RESUME_BUILDER_SYSTEM_TMPL = """You are a professional resume writer.
+SKILL_ASSESSMENT_SYSTEM = get_system_prompt("skill_assessment")
+RESUME_BUILDER_SYSTEM_TMPL = """You are the ZyncJobs Resume Builder AI.
 If the input contains specific technologies/skills/tools, use ONLY those. Do NOT invent or assume any.
-If the input only mentions a role title (e.g. 'Backend Developer, Fresher' with no specifics), you may suggest commonly used technologies relevant to that role.
+If the input only mentions a role title with no specifics, suggest commonly used technologies for that role.
 Return ONLY valid JSON as specified. No extra text, no markdown, no explanation."""
-SKILL_ASSESSMENT_SYSTEM = """You are a technical interviewer generating MCQ questions.
-Return ONLY valid JSON. No markdown, no explanation, no code blocks."""
 
 
 class CareerBrain(Brain):
@@ -35,18 +34,10 @@ class CareerBrain(Brain):
         elif intent == "SKILL_ASSESSMENT":
             return await self._skill_assessment(state, ctx, start)
         elif intent == "INTERVIEW_PREP":
-            return await self._interview_prep(state, ctx, start)
+            return await self._interview_chat(state, query, start)
         elif intent == "RESUME_BUILDER":
             return await self._resume_builder(state, ctx, start)
         elif intent == "CAREER_ADVICE":
-            has_profile = (
-                ctx.resume.skills
-                or ctx.user_preferences.get("skills")
-                or ctx.user_preferences.get("current_role")
-                or ctx.user_preferences.get("user_name")
-            )
-            if has_profile:
-                return await self._chat_advice(state, query, start)
             return await self._chat_advice(state, query, start)
         else:
             return await self._chat_advice(state, query, start)
@@ -106,30 +97,30 @@ class CareerBrain(Brain):
         prefs = state.context_data.user_preferences
         history = prefs.get("history", [])
         history_text = ""
-        for turn in history[-6:]:
+        for turn in history[-4:]:
             history_text += f"{turn.get('role', 'user')}: {turn.get('content', '')}\n"
 
         system_override = prefs.get("systemPrompt")
+        resume_text = prefs.get("resume_text", "")
+        user_context = self._build_user_context(state)
 
+        # Build system — always inject resume_text into system so LLM treats it as ground truth
         if system_override:
-            # Caller controls full context — skip RAG, use systemPrompt directly
             system = system_override
-            parts = []
-            if history_text:
-                parts.append(f"Previous conversation:\n{history_text}")
-            parts.append(f"User: {clean_query}")
+            if user_context and user_context != "No profile data available.":
+                system += f"\n\nCandidate Profile:\n{user_context}"
         else:
-            rag = state.retrieved_documents.chunks or []
-            rag_text = "\n".join(c.get("text", "") for c in rag[:3]) if rag else ""
-            user_context = self._build_user_context(state)
             system = get_prompt("career_chat_system", user_context=user_context)
-            parts = []
-            if history_text:
-                parts.append(f"Previous conversation:\n{history_text}")
-            parts.append(f"User: {clean_query}")
-            if rag_text:
-                parts.append(f"Relevant context:\n{rag_text}")
 
+        # Resume text always goes into system prompt — small models ignore it in user prompt
+        if resume_text:
+            system += f"\n\nUPLOADED RESUME (use ONLY these skills and details in your response):\n{resume_text}"
+
+        # User prompt: just history + question
+        parts = []
+        if history_text:
+            parts.append(f"Previous conversation:\n{history_text}")
+        parts.append(clean_query)
         prompt = "\n\n".join(parts)
         try:
             reply = await llm_service.generate(
@@ -144,6 +135,33 @@ class CareerBrain(Brain):
         except Exception:
             return BrainResult(
                 response={"reply": "I'm having trouble right now. Please try again in a moment.", "intent": "CAREER_ADVICE"},
+            )
+
+    async def _interview_chat(self, state: BrainState, query: str, start: float) -> BrainResult:
+        """Handles mock interview chat — uses systemPrompt override from frontend."""
+        clean_query = re.sub(r'^interview:\s*', '', query, flags=re.IGNORECASE).strip()
+        prefs = state.context_data.user_preferences
+        history = prefs.get("history", [])
+        system = prefs.get("systemPrompt", "You are a professional interviewer. Ask one question at a time and score answers.")
+
+        history_text = ""
+        for turn in history[-6:]:
+            history_text += f"{turn.get('role', 'user')}: {turn.get('content', '')}\n"
+
+        prompt = f"{history_text}\ncandidate: {clean_query}" if history_text else clean_query
+        try:
+            reply = await llm_service.generate(
+                brain_name="interview_chat", prompt=prompt, system=system,
+                temperature=0.3, max_tokens=500,
+            )
+            reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
+            return BrainResult(
+                response={"reply": reply, "intent": "INTERVIEW_PREP"},
+                execution_time=time.perf_counter() - start,
+            )
+        except Exception:
+            return BrainResult(
+                response={"reply": "I'm having trouble right now. Please try again.", "intent": "INTERVIEW_PREP"},
             )
 
     async def _assessment_mentor(self, state: BrainState, query: str, start: float) -> BrainResult:
@@ -169,7 +187,7 @@ class CareerBrain(Brain):
             )
 
         if target_q:
-            system = "You are an AI assessment mentor. Explain mistakes clearly and educationally. Never mention ZyncJobs platform features."
+            system = get_system_prompt("assessment_mentor")
             prompt = (
                 f"Assessment: {skill} | Score: {score}%\n\n"
                 f"Question {target_q['num']}: {target_q['question']}\n"
@@ -188,7 +206,7 @@ class CareerBrain(Brain):
                 f"Q{q['num']}: {q['question']} | Your answer: {q['userAnswer']} | Correct: {q['correctAnswer']}"
                 for q in wrong
             ) or "None"
-            system = "You are an AI assessment mentor. Be specific and educational. Never mention ZyncJobs platform features."
+            system = get_system_prompt("assessment_mentor")
             prompt = (
                 f"Assessment: {skill} | Score: {score}%\n\n"
                 f"Wrong answers:\n{wrong_summary}\n\n"
@@ -235,7 +253,7 @@ class CareerBrain(Brain):
 
     async def _skill_assessment(self, state: BrainState, ctx, start: float) -> BrainResult:
         skill = ctx.user_preferences.get("skill", "Python")
-        prompt = SKILL_ASSESSMENT_PROMPT.format(
+        prompt = get_prompt("skill_assessment_prompt",
             skill=skill,
             level=ctx.user_preferences.get("level", "intermediate"),
             count=ctx.user_preferences.get("count", 10),
@@ -249,9 +267,12 @@ class CareerBrain(Brain):
             questions = parsed.get("questions", [])
             valid = [q for q in questions if (
                 q.get("question") and isinstance(q.get("options"), list)
-                and len(q["options"]) == 4 and isinstance(q.get("correctAnswer"), int)
-                and 0 <= q["correctAnswer"] <= 3
+                and len(q["options"]) == 4
+                and isinstance(q.get("correctAnswer"), (int, str))
+                and 0 <= int(q["correctAnswer"]) <= 3
             )]
+            for q in valid:
+                q["correctAnswer"] = int(q["correctAnswer"])
             if len(valid) < 5:
                 raise ValueError(f"Only {len(valid)} valid questions generated")
             return BrainResult(

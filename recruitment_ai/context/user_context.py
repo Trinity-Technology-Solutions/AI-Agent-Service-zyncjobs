@@ -22,16 +22,23 @@ class UserContextLoader:
                 name=profile.get("name"),
             )
             state.user_role = profile.get("role", "candidate")
-            state.context_data.user_preferences = profile.get("preferences", {})
-            state.context["user_name"] = profile.get("name")
-            state.context["current_role"] = profile.get("title")
-            state.context["experience_years"] = profile.get("experience_years")
-            state.context["location"] = profile.get("location")
-            state.context["ats_score"] = profile.get("ats_score")
-            state.context["applications_count"] = profile.get("applications_count")
-            state.context["missing_skills"] = profile.get("missing_skills", [])
-            state.context["skills"] = profile.get("skills", [])
-
+            # Merge DB profile into user_preferences — do NOT overwrite what the
+            # frontend already sent (systemPrompt, skills, history, etc.)
+            db_prefs = profile.get("preferences", {})
+            merged = {
+                "user_name": profile.get("name"),
+                "current_role": profile.get("title"),
+                "experience_years": profile.get("experience_years"),
+                "location": profile.get("location"),
+                "ats_score": profile.get("ats_score"),
+                "applications_count": profile.get("applications_count"),
+                "missing_skills": profile.get("missing_skills", []),
+                "skills": profile.get("skills", []),
+                **db_prefs,
+                # Frontend-sent values take priority — applied last
+                **state.context_data.user_preferences,
+            }
+            state.context_data.user_preferences = merged
             logger.debug("User context loaded: %s (%s)", user_id, profile.get("role"))
         else:
             logger.debug("No profile found for user: %s", user_id)

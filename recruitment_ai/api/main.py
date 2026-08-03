@@ -7,6 +7,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from prometheus_client import Counter, Histogram, generate_latest, REGISTRY
 from recruitment_ai.config.settings import settings
 from recruitment_ai.auth.jwt_handler import get_current_user, create_access_token
+from recruitment_ai.api.routers.resume import get_optional_user
 from recruitment_ai.brains.master.master_brain import master_brain
 from recruitment_ai.brains.base import BrainState
 from recruitment_ai.workflows.recruitment_graph import graph
@@ -117,7 +118,7 @@ async def oauth2_token(form: OAuth2PasswordRequestForm = Depends()):
 
 
 @app.post("/ai/execute", response_model=ExecuteResponse)
-async def execute_ai(request: ExecuteRequest, user: dict = Depends(get_current_user)):
+async def execute_ai(request: ExecuteRequest, user: dict = Depends(get_optional_user)):
     import time
     workflow_input = {
         # ── Enterprise sub-objects (provide all so LangGraph channels are never empty) ──

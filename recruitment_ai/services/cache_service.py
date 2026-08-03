@@ -56,9 +56,12 @@ class CacheService:
         digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
         return f"zyncjobs:ai:{intent.lower()}:{digest}"
 
+    # Intents that must never be cached — result depends on file content, not query text
+    _NO_CACHE_INTENTS = {"RESUME_PARSER"}
+
     async def get(self, intent: str, query: str) -> Optional[dict]:
         """Return cached result or None."""
-        if not self._available or not self._client:
+        if not self._available or not self._client or intent in self._NO_CACHE_INTENTS:
             return None
         try:
             key = self._make_key(intent, query)
@@ -72,7 +75,7 @@ class CacheService:
 
     async def set(self, intent: str, query: str, result: dict) -> None:
         """Store result in cache with intent-specific TTL."""
-        if not self._available or not self._client:
+        if not self._available or not self._client or intent in self._NO_CACHE_INTENTS:
             return
         try:
             key = self._make_key(intent, query)

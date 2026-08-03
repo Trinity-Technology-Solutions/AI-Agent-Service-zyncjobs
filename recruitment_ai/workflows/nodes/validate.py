@@ -14,7 +14,7 @@ async def validate_node(state: BrainState) -> BrainState:
         return state
 
     if not state.result and not state.error:
-        state.result = {"reply": "I can help you with job search, resume building, career advice, interview prep, and using the ZyncJobs platform. Could you please rephrase your question?"}
+        state.result = {"reply": "I didn't quite catch that. Could you rephrase your question? I can help with career advice, skill gaps, resume review, interview prep, and salary guidance."}
 
     from recruitment_ai.brains.shared.brain_result import BrainResult
     result = BrainResult(

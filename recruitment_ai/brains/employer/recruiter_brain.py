@@ -24,7 +24,7 @@ class RecruiterBrain(Brain):
             or state.context.get("candidates") or state.context.get("candidate") or state.context.get("job")
         )
         if not has_structured_context:
-            return await self._chat_recruiter(query, state.context_data.user_preferences.get("history", []), start)
+            return await self._chat_recruiter(state, query, start)
 
         if "shortlist" in query.lower() or "evaluate" in query.lower():
             return await self._shortlist(state.context, start)
@@ -32,17 +32,58 @@ class RecruiterBrain(Brain):
             return await self._score_candidate(state, start)
         return await self._search(query, state.context, start)
 
-    async def _chat_recruiter(self, query: str, history: list, start: float) -> BrainResult:
+    def _build_employer_context(self, prefs: dict) -> str:
+        """Build employer context block from frontend-sent jobs_context and user_profile."""
+        parts = []
+        profile = prefs.get("user_profile") or {}
+        if isinstance(profile, dict):
+            name = profile.get("name") or profile.get("fullName") or ""
+            company = profile.get("company") or profile.get("companyName") or ""
+            if name:
+                parts.append(f"Recruiter Name: {name}")
+            if company:
+                parts.append(f"Company: {company}")
+        jobs = prefs.get("jobs_context") or []
+        if isinstance(jobs, list) and jobs:
+            job_lines = []
+            for j in jobs[:5]:
+                if not isinstance(j, dict):
+                    continue
+                title = j.get("jobTitle") or j.get("title") or ""
+                skills = j.get("skills")
+                skills_text = ", ".join(skills[:5]) if isinstance(skills, list) else (str(skills) if skills else "")
+                loc = j.get("location") or ""
+                exp = j.get("experienceRange") or j.get("experienceLevel") or ""
+                line = f"- {title} (location: {loc}, experience: {exp}".rstrip(", ")
+                if skills_text:
+                    line += f", skills: {skills_text}"
+                job_lines.append(line + ")")
+            if job_lines:
+                parts.append("Employer Active Jobs:\n" + "\n".join(job_lines))
+        return "\n".join(parts)
+
+    async def _chat_recruiter(self, state: BrainState, query: str, start: float) -> BrainResult:
+        prefs = state.context_data.user_preferences or {}
         clean_query = re.sub(r'^recruiter:\s*', '', query, flags=re.IGNORECASE).strip()
         history_text = ""
-        for turn in history[-6:]:
+        for turn in (prefs.get("history", []) or [])[-6:]:
             role = turn.get("role", "user")
             content = turn.get("content", "")
             history_text += f"{role}: {content}\n"
+
+        # Frontend systemPrompt override wins (it already embeds job context)
+        system = prefs.get("systemPrompt") or get_system_prompt("recruiter_chat")
+        employer_context = self._build_employer_context(prefs)
+        if "{{ employer_context }}" in system:
+            system = system.replace(
+                "{{ employer_context }}",
+                f"Employer Context:\n{employer_context}" if employer_context
+                else "Employer Context: (No active jobs available yet.)",
+            )
+
         prompt = clean_query
         if history_text:
             prompt = f"Previous conversation:\n{history_text}\n\nRecruiter: {clean_query}"
-        system = get_prompt("recruiter_chat_system")
         try:
             reply = await llm_service.generate(
                 brain_name="recruiter", prompt=prompt, system=system,

@@ -164,15 +164,15 @@ Skill: {skill}
 Level: {level}
 
 Return ONLY this JSON:
-{{
+{
   "questions": [
-    {{
+    {
       "question": "specific technical question about {skill}",
       "options": ["option A", "option B", "option C", "option D"],
       "correctAnswer": 0
-    }}
+    }
   ]
-}}
+}
 
 Rules: exactly {count} questions, exactly 4 options each, correctAnswer is 0-based index.""",
 
@@ -229,14 +229,14 @@ Experience Level: {{ experience_level }}
 Location: {{ location }}
 
 Return JSON:
-{{
+{
   "search_strategy": "Specific approach using ZyncJobs candidate database",
-  "recommended_filters": {{"skills": [], "experience": "", "location": ""}},
+  "recommended_filters": {"skills": [], "experience": "", "location": ""},
   "screening_questions": ["Q1", "Q2", "Q3"],
-  "evaluation_criteria": {{"skill_weight": 40, "experience_weight": 30, "education_weight": 15, "location_weight": 10, "other_weight": 5}},
-  "interview_suggestions": {{"rounds": 3, "topics": ["topic1"], "estimated_duration_minutes": 60}},
+  "evaluation_criteria": {"skill_weight": 40, "experience_weight": 30, "education_weight": 15, "location_weight": 10, "other_weight": 5},
+  "interview_suggestions": {"rounds": 3, "topics": ["topic1"], "estimated_duration_minutes": 60},
   "advice": "Specific actionable hiring advice"
-}}""",
+}""",
 
     # ── ATS ───────────────────────────────────────────────────────────────────
     "ats_system": f"""You are the ZyncJobs ATS (Applicant Tracking System) Analyzer — you score resumes against job descriptions to help candidates get past ATS filters.
@@ -258,19 +258,19 @@ Job Description:
 {{ job_description }}
 
 Return JSON:
-{{
+{
   "ats_score": 0-100,
-  "keyword_match": {{
+  "keyword_match": {
     "matched": ["skill1", "skill2"],
     "missing": ["skill3", "skill4"],
     "match_percentage": 0-100
-  }},
+  },
   "formatting_score": 0-100,
   "section_completeness": 0-100,
   "experience_relevance": 0-100,
   "suggestions": ["Specific fix 1", "Specific fix 2"],
   "passes_ats": true/false
-}}""",
+}""",
 
     # ── Resume Parser ─────────────────────────────────────────────────────────
     "resume_parser_system": """You are the ZyncJobs Resume Parser — you extract structured data from resumes with high accuracy.
@@ -320,7 +320,8 @@ RULES:
 3. Include clear responsibilities, requirements, and benefits.
 4. Use inclusive language — avoid gendered terms.
 5. Optimize for ATS with relevant keywords for the role.
-6. The "How to Apply" section should direct candidates to apply at the employer's company, not mention any platform.""",
+6. The "How to Apply" section must tell candidates to apply ON this platform (ZyncJobs) — e.g. "Click the Apply button on the ZyncJobs job posting", "Apply on ZyncJobs". NEVER tell candidates to email the employer, visit the employer's website, or send applications to the employer directly.
+7. NEVER use markdown formatting: no # headings (###, #### etc.), no **bold**, no *italics*. Use PLAIN TEXT section names like "About Us", "Key Responsibilities", "Requirements", "Benefits" on their own line, and simple bullet points (- or •) only.""",
 
     "jd_generator_template": """Generate a professional job description for this employer.
 
@@ -330,7 +331,7 @@ Location: {{ location }}
 Experience Level: {{ experience_level }}
 Skills: {{ skills }}
 
-Write a complete JD with: About {{ company }}, Role Overview, Key Responsibilities, Requirements, Nice to Have, Benefits, How to Apply at {{ company }}.""",
+Write a complete JD with: About {{ company }}, Role Overview, Key Responsibilities, Requirements, Nice to Have, Benefits, How to Apply (via ZyncJobs).""",
 
     # ── Job Parser ────────────────────────────────────────────────────────────
     "job_parser_system": """You are ZyncJobs' strict job description parser. Your ONLY job is to extract structured fields from a job description with maximum precision.
@@ -375,7 +376,7 @@ FIELD RULES — follow EXACTLY:
 - "benefits": Array of benefits explicitly offered (Health insurance, Visa sponsorship, 401k, etc.). Return [] if none.
 
 Return ONLY this JSON (no markdown, no extra text):
-{{
+{
   "company": "",
   "jobTitle": "",
   "location": "",
@@ -395,7 +396,7 @@ Return ONLY this JSON (no markdown, no extra text):
   "educationLevel": "",
   "priority": "Medium",
   "benefits": []
-}}""",
+}""",
 
     # ── Cover Letter ──────────────────────────────────────────────────────────
     "cover_letter_system": """You are the ZyncJobs Cover Letter AI — you write personalized, compelling cover letters based on the candidate's actual resume and the target job.

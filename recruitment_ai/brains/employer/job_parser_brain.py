@@ -71,7 +71,9 @@ _TITLE_VERBS = re.compile(
 )
 _META_WORDS = re.compile(
     r"^(experience|exp|salary|location|skills?|department|employment|job type|work type|"
-    r"notice|joining|ctc|lpa|about|apply|hiring|urgent|immediate|duties|responsibilities|qualifications)\b",
+    r"notice|joining|ctc|lpa|about|apply|hiring|urgent|immediate|duties|responsibilities|qualifications|"
+    r"overview|requirements|benefits|summary|eligibility|process|description|zyncjobs|connecting|"
+    r"job description|about us|key responsibilities|nice to have|must have|experience required)\b",
     re.IGNORECASE,
 )
 _SENTENCE_LIKE = re.compile(r",|\b(and|to|for|with|the|that|this|which|of)\b", re.IGNORECASE)
@@ -173,7 +175,9 @@ class JobParserBrain(Brain):
 
     def _sanitize_title(self, title: str, content: str) -> str:
         """Reject sentence/responsibility-like titles; fall back to the JD's first meaningful line."""
-        t = re.sub(r"[*#]+", "", title or "").strip()
+        t = (title or "").replace("**", "").strip()
+        t = re.sub(r"[\|\u2014\u2013].+$", "", t).strip()
+        t = re.sub(r"[*#]+", "", t).strip()
         words = t.split()
         bad = (
             len(words) > 6 or len(t) > 60
@@ -185,8 +189,9 @@ class JobParserBrain(Brain):
             return t
         lines = content.split("\n")
         for line in lines[:8]:
-            line = re.sub(r"^[-*#\d+.)\s]+", "", line.strip())
-            line = re.sub(r"[-|].+$", "", line.strip()).strip()
+            line = re.sub(r"^[-*#\d+.)\s]+", "", line.strip()).replace("**", "")
+            line = re.sub(r"[\|\u2014\u2013].+$", "", line).strip()
+            line = re.sub(r"[*#]+$", "", line).strip()
             if not line or len(line) > 80 or len(line) < 3:
                 continue
             lw = line.split()

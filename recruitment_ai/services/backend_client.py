@@ -166,6 +166,18 @@ class BackendClient:
             logger.warning("Backend search_candidates(%s) failed: %s", criteria, e)
             return []
 
+    # ── AI Recruiter Assistant (full employer context bundle) ──────────────
+
+    async def get_recruiter_context(self, email: str) -> Optional[dict]:
+        """GET /api/employer/recruiter-context?email=:email — returns company + jobs + candidates + stats bundle."""
+        try:
+            resp = await self.client.get("/api/employer/recruiter-context", params={"email": email})
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.warning("Backend get_recruiter_context(%s) failed: %s", email, e)
+            return None
+
     # ── Health ────────────────────────────────────────────────────────
 
     async def health_check(self) -> bool:

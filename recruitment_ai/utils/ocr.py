@@ -5,8 +5,27 @@ Uses pdfplumber (primary), PyPDF2 (fallback), pytesseract (image OCR), python-do
 import logging
 import io
 import base64
+import os
+import shutil
 
 logger = logging.getLogger(__name__)
+
+# Common Windows install location — used when tesseract is not on PATH
+_TESSERACT_FALLBACKS = [
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+]
+
+
+def _ensure_tesseract_binary():
+    import pytesseract
+    configured = os.environ.get("TESSERACT_CMD") or pytesseract.pytesseract.tesseract_cmd
+    if shutil.which(configured):
+        return
+    for candidate in _TESSERACT_FALLBACKS:
+        if os.path.exists(candidate):
+            pytesseract.pytesseract.tesseract_cmd = candidate
+            return
 
 
 def extract_text(file_content: str, file_type: str) -> str:
@@ -100,6 +119,7 @@ def _extract_image(data: bytes) -> str:
 def _ocr_image(img) -> str:
     try:
         import pytesseract
+        _ensure_tesseract_binary()
         return pytesseract.image_to_string(img).strip()
     except Exception as e:
         logger.warning("pytesseract OCR failed: %s", e)

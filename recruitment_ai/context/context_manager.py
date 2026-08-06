@@ -11,6 +11,7 @@ from recruitment_ai.context.resume_context import resume_context
 from recruitment_ai.context.job_context import job_context
 from recruitment_ai.context.company_context import company_context
 from recruitment_ai.context.assessment_context import assessment_context
+from recruitment_ai.context.recruiter_context import recruiter_context_loader
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ class ContextManager:
         state = await job_context.load(state)
         state = await company_context.load(state)
         state = await assessment_context.load(state)
+        state = await recruiter_context_loader.load(state)
 
         logger.debug("Context loaded for user %s", state.user_id)
         return state

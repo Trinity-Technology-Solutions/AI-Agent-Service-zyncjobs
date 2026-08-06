@@ -1,6 +1,7 @@
 """JD Generator Brain — full enterprise pipeline.
 Pipeline: BrainState.context_data → LLM → BrainResult
 """
+import re
 import time
 from recruitment_ai.brains.base import Brain, BrainState, BrainResult
 from recruitment_ai.llm import llm_service
@@ -33,8 +34,9 @@ class JDGeneratorBrain(Brain):
                 temperature=0.3,
                 max_tokens=2048,
             )
+            jd = self._clean_jd(result)
             return BrainResult(
-                response={"job_description": result.strip(), "title": params["title"], "model_used": "llm"},
+                response={"job_description": jd, "title": params["title"], "model_used": "llm"},
                 execution_time=time.perf_counter() - start,
             )
         except Exception as e:
@@ -42,6 +44,13 @@ class JDGeneratorBrain(Brain):
                 response={"job_description": self._template_fallback(params), "fallback": True},
                 metadata={"fallback_reason": str(e)},
             )
+
+    @staticmethod
+    def _clean_jd(text: str) -> str:
+        """Strip markdown headings (#, ##, ####) and collapse blank runs."""
+        cleaned = re.sub(r"^#{1,6}\s*(.*)$", r"\1", text or "", flags=re.MULTILINE)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return cleaned
 
     def _extract_params(self, context: dict, query: str, ctx) -> dict:
         defaults = {
@@ -58,32 +67,32 @@ class JDGeneratorBrain(Brain):
 
     def _template_fallback(self, params: dict) -> str:
         return f"""
-# {params['title']} at {params['company']}
+{params['title']} at {params['company']}
 
-## About {params['company']}
+About {params['company']}
 We are a company looking for talented individuals to join our team.
 
-## About the Role
+About the Role
 We are looking for a {params.get('experience_level', 'mid')} {params['title']} to join our team in {params.get('location', 'Remote')}.
 
-## Key Responsibilities
+Key Responsibilities
 - Develop and maintain features
 - Write clean, tested code
 - Participate in code reviews
 
-## Required Qualifications
+Required Qualifications
 - 3+ years experience
 - CS degree or equivalent
 
-## Skills Required
+Skills Required
 {params.get('skills', 'Python, JavaScript, SQL')}
 
-## Benefits
+Benefits
 - Health insurance
 - Remote work options
 - Learning & development budget
 
-## How to Apply
+How to Apply
 Please submit your resume and cover letter to {params['company']}.
 """.strip()
 

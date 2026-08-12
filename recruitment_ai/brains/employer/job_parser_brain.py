@@ -158,10 +158,18 @@ class JobParserBrain(Brain):
         exp = str(parsed.get("experienceRange") or "")
         m = _EXP_RANGE.search(exp)
         if m:
-            parsed["experienceRange"] = f"{m.group(1)}-{m.group(2)} years"
+            lo, hi = int(m.group(1)), int(m.group(2))
+            # Sanity: reject implausible values (e.g. AI hallucinated 20-20)
+            if lo <= 25 and hi <= 30 and hi >= lo:
+                parsed["experienceRange"] = f"{lo}-{hi} years"
+            else:
+                parsed["experienceRange"] = ""
         else:
             m2 = _EXP_PLUS.search(exp)
-            parsed["experienceRange"] = f"{m2.group(1)}+ years" if m2 else ""
+            if m2 and int(m2.group(1)) <= 25:
+                parsed["experienceRange"] = f"{m2.group(1)}+ years"
+            else:
+                parsed["experienceRange"] = ""
 
         # Enforce experienceLevel enum
         if parsed.get("experienceLevel") not in ("Entry", "Mid", "Senior", "Lead"):
@@ -170,6 +178,11 @@ class JobParserBrain(Brain):
         # Enforce workSetting enum
         if parsed.get("workSetting") not in ("Remote", "Hybrid", "On-site"):
             parsed["workSetting"] = "On-site"
+
+        # Clean location — take only the first city if slash-separated
+        loc = str(parsed.get("location") or "")
+        if "/" in loc:
+            parsed["location"] = loc.split("/")[0].strip().split(",")[0].strip()
 
         return parsed
 

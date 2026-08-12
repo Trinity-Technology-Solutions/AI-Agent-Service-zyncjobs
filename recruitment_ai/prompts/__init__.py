@@ -358,12 +358,12 @@ JOB DESCRIPTION:
 FIELD RULES — follow EXACTLY:
 - "jobTitle": The exact position title, 2-5 words maximum (e.g. "Software Engineer", "Senior QA Tester", "Frontend Developer"). CRITICAL: Never return a sentence, a responsibility bullet, or text longer than 60 characters. Never start with a verb like Design/Develop/Test/Maintain/Build/Lead. Look FIRST for an explicit "Job Title:" label, then the first line of the posting, then phrases like "We are looking for a", "We are hiring a", "Join our team as a". If the job title cannot be found, return "".
 - "company": Hiring company proper noun only (e.g. "Infosys", "Accenture"). Never a skill, tool, heading, or comma-separated list. Return "" if unsure.
-- "location": City/region only (e.g. "Chennai", "Dubai", "Remote"). Never a skill or company name. Return "" if not found.
+- "location": City/region only (e.g. "Chennai", "Dubai", "Remote"). If multiple locations are listed (e.g. "Chennai, India / Pan India"), return only the FIRST city (e.g. "Chennai"). Never a skill or company name. Return "" if not found.
 - "jobType": Array from: ["Full-time"], ["Part-time"], ["Contract"], ["Internship"]. Default ["Full-time"].
 - "workSetting": Exactly one of: Remote, Hybrid, On-site.
 - "mustHaveSkills": Array of REQUIRED/MANDATORY skills. Look for sections labeled "Must Have", "Required Skills", "Mandatory Skills", "Key Skills", "Technical Skills", "Core Skills", or skills under "Requirements"/"Qualifications". For non-tech roles (HSE, HR, Finance, Healthcare) extract domain skills like "NEBOSH", "Risk Assessment", "OSHA", "Fire Safety".
 - "goodToHaveSkills": Array of OPTIONAL/PREFERRED/NICE-TO-HAVE skills. If no such section exists, return [].
-- "experienceRange": MUST be "X-Y years" or "X+ years" using digits only (e.g. "3-5 years", "5+ years"). Convert "3 to 5 years", "3-5 Years", "minimum 5 years" into this format.
+- "experienceRange": MUST be "X-Y years" or "X+ years" using digits only (e.g. "3-5 years", "5+ years"). Convert "3 to 5 years", "3-5 Years", "minimum 5 years" into this format. CRITICAL: If the JD lists multiple experience tiers (e.g. P3: 5-8 years, P4: 8-12 years), extract the OVERALL range spanning all tiers (e.g. "5-12 years"). NEVER return a number like 20 — only extract what is explicitly stated in the JD.
 - "experienceLevel": One of: Entry, Mid, Senior, Lead.
 - "salaryMin": 0 always. "salaryMax": 0 always.
 - "currency": INR default; USD/AED/OMR if the text indicates.

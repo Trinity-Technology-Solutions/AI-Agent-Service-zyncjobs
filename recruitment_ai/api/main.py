@@ -120,12 +120,27 @@ async def oauth2_token(form: OAuth2PasswordRequestForm = Depends()):
 @app.post("/ai/execute", response_model=ExecuteResponse)
 async def execute_ai(request: ExecuteRequest, user: dict = Depends(get_optional_user)):
     import time
+    ctx = request.context or {}
+    # Map JD-generator context fields into typed context_data sub-objects
+    # so jd_generator_brain can read ctx.job.title, ctx.job.skills, etc.
+    job_ctx = {
+        "title": ctx.get("title") or ctx.get("jobTitle") or "",
+        "description": ctx.get("existingDescription") or ctx.get("description") or "",
+        "company_name": ctx.get("company") or "",
+        "skills": ctx.get("skills") or [],
+    }
+    company_ctx = {"name": ctx.get("company") or ""}
+
     workflow_input = {
         # ── Enterprise sub-objects (provide all so LangGraph channels are never empty) ──
         "user": {"id": user.get("user_id"), "email": user.get("email"), "role": request.user_role},
         "session": {"id": request.session_id},
         "conversation": {},
-        "context_data": {"user_preferences": request.context or {}},
+        "context_data": {
+            "user_preferences": ctx,
+            "job": job_ctx,
+            "company": company_ctx,
+        },
         "retrieved_documents": {},
         "provider_info": {},
         "execution": {},
@@ -140,7 +155,7 @@ async def execute_ai(request: ExecuteRequest, user: dict = Depends(get_optional_
         "session_id": request.session_id,
         "conversation_id": request.session_id,
         "user_role": request.user_role,
-        "context": request.context or {},
+        "context": ctx,
         "file_content": request.file_content,
         "file_type": request.file_type,
         "retrieved_context": [],

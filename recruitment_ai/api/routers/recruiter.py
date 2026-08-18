@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends
 from recruitment_ai.schemas.brains import (
     RecruiterSearchRequest, RecruiterSearchResponse,
+    RankCandidatesRequest, RankCandidatesResponse,
 )
 from recruitment_ai.auth.jwt_handler import get_current_user
 from recruitment_ai.workflows.recruitment_graph import graph
@@ -18,6 +19,11 @@ def _build_state(request: dict, user: dict, intent: str) -> dict:
         "retrieved_documents": {},
         "provider_info": {},
         "execution": {},
+        "context": {},
+        "retrieved_context": [],
+        "memory": [],
+        "provider": "",
+        "model": "",
         "request": request,
         "response": None,
         "intent": intent,
@@ -47,19 +53,19 @@ async def search_candidates(request: RecruiterSearchRequest, user: dict = Depend
 
 
 
-@router.post("/candidates/rank", response_model=dict)
-async def rank_candidates(job_description: str, candidates: list = [], user: dict = Depends(get_current_user)):
+@router.post("/candidates/rank", response_model=RankCandidatesResponse)
+async def rank_candidates(request: RankCandidatesRequest, user: dict = Depends(get_current_user)):
     """Rank candidates by fit score for a given job."""
     result = await graph.ainvoke(_build_state({
-        "job_description": job_description, "candidates": candidates,
+        "job_description": request.job_description, "candidates": request.candidates or [],
         "query": "Rank candidates for job",
-    }, user, "RECRUITER"))
+    }, user, "RANKING"))
     r = result.get("result") or {}
-    return {
-        "success": result.get("error") is None,
-        "ranked_candidates": r.get("candidates") or r.get("ranked") or [],
-        "error": result.get("error"),
-    }
+    return RankCandidatesResponse(
+        success=result.get("error") is None,
+        ranked_candidates=r.get("candidates") or r.get("ranked") or [],
+        error=result.get("error"),
+    )
 
 @router.post("/shortlist", response_model=RecruiterSearchResponse)
 async def shortlist_candidates(request: RecruiterSearchRequest, user: dict = Depends(get_current_user)):

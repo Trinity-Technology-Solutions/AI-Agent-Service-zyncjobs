@@ -100,6 +100,8 @@ class RequestInfo(BaseModel):
     file_content: str | None = None
     file_type: str | None = None
 
+    model_config = {"extra": "allow"}
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # BrainState

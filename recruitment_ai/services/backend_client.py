@@ -156,12 +156,17 @@ class BackendClient:
     # ── Candidates (for recruiter) ────────────────────────────────────
 
     async def search_candidates(self, criteria: str, limit: int = 20) -> list[dict]:
-        """GET /api/candidates?q=:criteria&limit=:limit"""
+        """GET /users?role=candidate&skills=:criteria&limit=:limit — public candidate search."""
         try:
-            resp = await self.client.get("/api/candidates", params={"q": criteria, "limit": limit})
+            resp = await self.client.get(
+                "/users",
+                params={"role": "candidate", "skills": criteria, "limit": limit},
+            )
             resp.raise_for_status()
             data = resp.json()
-            return data if isinstance(data, list) else []
+            if isinstance(data, list):
+                return data
+            return data.get("users") or data.get("candidates") or []
         except Exception as e:
             logger.warning("Backend search_candidates(%s) failed: %s", criteria, e)
             return []

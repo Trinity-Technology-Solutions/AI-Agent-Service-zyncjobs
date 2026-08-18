@@ -170,6 +170,19 @@ class RecruiterSearchResponse(BaseModel):
     error: Optional[str] = None
 
 
+class RankCandidatesRequest(BaseModel):
+    job_description: str
+    candidates: list[dict] = []
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+class RankCandidatesResponse(BaseModel):
+    success: bool
+    ranked_candidates: list[dict] = []
+    error: Optional[str] = None
+
+
 class ChatRequest(BaseModel):
     message: str
     conversation_id: Optional[str] = None

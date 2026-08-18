@@ -13,10 +13,14 @@ Two modes:
 import re
 import json
 import time
+import logging
 from recruitment_ai.brains.base import Brain, BrainState, BrainResult
 from recruitment_ai.llm import llm_service
+from recruitment_ai.services.backend_client import backend_client
 from recruitment_ai.validators.json_validator import validate_json_strict
 from recruitment_ai.prompts import get_prompt, get_system_prompt
+
+logger = logging.getLogger(__name__)
 
 ASSISTANT_SYSTEM = f"""You are the ZyncJobs AI Recruiter Assistant â€” a data-aware recruitment assistant for employers, NOT a generic chatbot.
 
@@ -42,20 +46,38 @@ class RecruiterBrain(Brain):
         query = (state.request.query or state.query or "").strip() or "Help me with my hiring"
         intent = (state.intent or "").upper()
 
-        # â”€â”€ Structured endpoints (/ai/recruiter/*) â€” legacy JSON behavior â”€â”€
+        # Seed backward-compat context from the request so structured endpoints
+        # receive the real payloads (criteria, filters, candidates, job description)
+        ctx = state.context or {}
+        req = state.request
+        if hasattr(req, "model_dump"):
+            req = req.model_dump()
+        elif not isinstance(req, dict):
+            req = dict(req or {})
+        req_candidates = req.get("candidates") or []
+        if req_candidates:
+            ctx["candidates"] = req_candidates
+        if req.get("job_description"):
+            ctx["job"] = {**dict(ctx.get("job") or {}), "description": req["job_description"]}
+        if req.get("criteria"):
+            ctx["criteria"] = req["criteria"]
+        if req.get("filters"):
+            ctx["filters"] = req["filters"]
+
+        # Structured endpoints (/ai/recruiter/*) — legacy JSON behavior
         if intent in ("RECRUITER_SEARCH", "RECRUITER_SHORTLIST", "RANKING"):
             if intent == "RECRUITER_SEARCH":
-                return await self._search(query, state.context, start)
+                return await self._search(query, ctx, start)
             if intent == "RECRUITER_SHORTLIST":
-                return await self._shortlist(state.context, start)
-            return await self._score_candidate(state, start)
+                return await self._shortlist(ctx, start)
+            return await self._score_candidate(state, ctx, start)
 
-        # â”€â”€ ASSISTANT mode: real employer data from the context loader â”€â”€
+        # — ASSISTANT mode: real employer data from the context loader —
         rc = getattr(state.context_data, "recruiter_context", None) or {}
         if isinstance(rc, dict) and (rc.get("jobs") or rc.get("stats") or rc.get("company")):
             return await self._assistant_chat(state, rc, query, start)
 
-        # â”€â”€ Legacy fallback (no real data available) â”€â”€
+        # — Legacy fallback (no real data available) —
         ctx = state.context_data
         has_structured_context = bool(
             ctx.job.title or ctx.job.description or ctx.company.name
@@ -67,7 +89,7 @@ class RecruiterBrain(Brain):
         if "shortlist" in query.lower() or "evaluate" in query.lower():
             return await self._shortlist(state.context, start)
         if "score" in query.lower() or "rank" in query.lower():
-            return await self._score_candidate(state, start)
+            return await self._score_candidate(state, state.context, start)
         return await self._search(query, state.context, start)
 
     # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -357,97 +379,260 @@ Answer using the Employer Context. Ground your answer in the real company, jobs,
             location=context.get("location", ""),
         )
         system = get_system_prompt("recruiter")
+        strategy = {}
         try:
             result = await llm_service.generate(
                 brain_name="recruiter", prompt=prompt, system=system,
                 temperature=0.3, max_tokens=1024,
             )
-            parsed = validate_json_strict(result, "object") or {}
-            return BrainResult(response=parsed, execution_time=time.perf_counter() - start)
+            strategy = validate_json_strict(result, "object") or {}
+            if not strategy:
+                strategy = self._fallback_search(context)
         except Exception as e:
-            return BrainResult(
-                response=self._fallback_search(context),
-                metadata={"fallback": True, "error": str(e)},
-            )
+            strategy = self._fallback_search(context)
+            strategy["_llm_error"] = str(e)
+        candidates = await backend_client.search_candidates(query or "", limit=20)
+        normalized = self._normalize_search_candidates(candidates)
+        return BrainResult(
+            response={
+                "candidates": normalized,
+                "total_count": len(normalized),
+                "strategy": strategy,
+            },
+            execution_time=time.perf_counter() - start,
+        )
+
+    @staticmethod
+    def _normalize_search_candidates(raw_list: list) -> list:
+        """Map Node backend candidate profiles to the recruiter search payload shape."""
+        out = []
+        for c in raw_list or []:
+            if not isinstance(c, dict):
+                continue
+            name = (c.get("fullName") or c.get("name") or c.get("candidateName") or "").strip()
+            if not name:
+                continue
+            skills = c.get("skills") or c.get("skillTags") or c.get("topSkills") or []
+            if isinstance(skills, str):
+                skills = [s.strip() for s in skills.split(",") if s.strip()]
+            out.append({
+                "id": c.get("id") or c.get("_id") or c.get("userId") or "",
+                "name": name,
+                "title": c.get("currentRole") or c.get("designation") or c.get("title") or c.get("headline") or c.get("role") or "",
+                "skills": [str(s) for s in skills][:10],
+                "location": c.get("location") or c.get("city") or "",
+                "experience": str(c.get("yearsExperience") or c.get("experience") or c.get("experienceLevel") or ""),
+                "email": c.get("email") or c.get("userEmail") or "",
+                "summary": c.get("profileSummary") or c.get("bio") or c.get("summary") or "",
+                "matchScore": c.get("matchScore") or c.get("match_score") or None,
+                "atsScore": c.get("aiScore") or c.get("atsScore") or None,
+            })
+        return out
 
     async def _shortlist(self, context: dict, start: float) -> BrainResult:
-        job = context.get("job_requirements", "")
-        candidates = context.get("candidates", [])
-        prompt = SHORTLIST_PROMPT.format(job_requirements=job[:2000], candidates=json.dumps(candidates)[:3000])
-        system = get_system_prompt("recruiter")
-        try:
-            result = await llm_service.generate(
-                brain_name="recruiter", prompt=prompt, system=system,
-                temperature=0.1, max_tokens=1024,
-            )
-            parsed = validate_json_strict(result, "object") or {}
-            return BrainResult(response=parsed, execution_time=time.perf_counter() - start)
-        except Exception as e:
-            return BrainResult(
-                response={"shortlisted": [], "top_candidate_id": "", "summary": "Shortlisting evaluation unavailable"},
-                metadata={"error": str(e)},
-            )
+        job = context.get("criteria") or context.get("job_requirements") or ""
+        candidates = context.get("candidates") or []
+        if not isinstance(candidates, list) or not candidates:
+            candidates = await backend_client.search_candidates(job, limit=20)
+        normalized = self._normalize_search_candidates(candidates)
+        shortlisted = []
+        summary = ""
+        if normalized:
+            prompt = SHORTLIST_PROMPT.format(job_requirements=job[:2000], candidates=json.dumps(normalized)[:8000])
+            system = get_system_prompt("recruiter")
+            try:
+                result = await llm_service.generate(
+                    brain_name="recruiter", prompt=prompt, system=system,
+                    temperature=0.1, max_tokens=1024,
+                )
+                parsed = validate_json_strict(result, "object") or {}
+                shortlisted = parsed.get("shortlisted") or []
+                summary = parsed.get("summary") or ""
+            except Exception as e:
+                summary = "Shortlisting evaluation unavailable"
+        return BrainResult(
+            response={
+                "candidates": normalized,
+                "total_count": len(normalized),
+                "shortlisted": shortlisted,
+                "summary": summary,
+            },
+            execution_time=time.perf_counter() - start,
+        )
 
-    async def _score_candidate(self, state: BrainState, start: float) -> BrainResult:
+    async def _score_candidate(self, state: BrainState, context: dict, start: float) -> BrainResult:
         prefs = state.context_data.user_preferences
-        context = state.context
         job_data = context.get("job") or prefs.get("job") or {}
         job_desc = job_data.get("description") or job_data.get("jobDescription") or state.context_data.job.description or ""
         job_skills = job_data.get("skills") or state.context_data.job.skills or []
         if isinstance(job_skills, list) and job_skills:
             job_desc = f"{job_desc}\n\nRequired Skills: {', '.join(str(s) for s in job_skills if s)}".strip()
-        candidate = context.get("candidate")
-        if candidate is None:
-            candidates = context.get("candidates") or []
-            candidate = candidates[0] if candidates else prefs.get("candidate") or {}
-        if isinstance(candidate, list):
-            candidate = candidate[0] if candidate else {}
-        candidate = dict(candidate or {})
-        # Never discard candidate data: build a readable resume from whatever fields exist
-        if not candidate.get("resume"):
+
+        candidates = context.get("candidates") or []
+        if not isinstance(candidates, list) or not candidates:
+            candidates = [context.get("candidate")] if context.get("candidate") else []
+        candidates = [c for c in candidates if isinstance(c, dict)]
+        candidates = candidates[:10]
+
+        def _readable_resume(c: dict) -> dict:
+            if c.get("resume"):
+                return c
             parts = []
-            if candidate.get("skills"):
-                parts.append("Skills: " + ", ".join(str(s) for s in candidate["skills"] if s))
-            if candidate.get("yearsExp") or candidate.get("experience"):
-                parts.append("Experience: " + str(candidate.get("yearsExp") or candidate.get("experience")))
-            if candidate.get("education"):
-                parts.append("Education: " + str(candidate["education"]))
-            if candidate.get("location"):
-                parts.append("Location: " + str(candidate["location"]))
-            if candidate.get("profileSummary"):
-                parts.append("Summary: " + str(candidate["profileSummary"]))
+            if c.get("skills"):
+                parts.append("Skills: " + ", ".join(str(s) for s in c["skills"] if s))
+            if c.get("yearsExp") or c.get("experience"):
+                parts.append("Experience: " + str(c.get("yearsExp") or c.get("experience")))
+            if c.get("education"):
+                parts.append("Education: " + str(c["education"]))
+            if c.get("location"):
+                parts.append("Location: " + str(c["location"]))
+            if c.get("profileSummary"):
+                parts.append("Summary: " + str(c["profileSummary"]))
             if parts:
-                candidate["resume"] = "\n".join(parts)
-        prompt = f"""Score this candidate for the job.
+                c["resume"] = "\n".join(parts)
+            return c
 
-Job: {job_desc[:2000]}
-Candidate: {json.dumps(candidate)[:2000]}
+        if not candidates:
+            return BrainResult(
+                response={"ranked": [], "overallScore": 50, "reasons": ["No candidates provided"]},
+                execution_time=time.perf_counter() - start,
+            )
 
-Return JSON with:
-{{"overallScore": 0-100, "skillsScore": 0-100, "experienceScore": 0-100,
-  "shouldReject": false, "reasons": [], "feedback": "",
-  "recommendation": "strong|consider|reject",
-  "matchingSkills": [], "missingSkills": [],
-  "summary": "", "breakdown": {{"skill_weight": 0, "experience_weight": 0, "education_weight": 0, "location_weight": 0}}
-}}"""
+        job_skills_list = [str(s).strip() for s in job_skills if str(s).strip()] if isinstance(job_skills, list) else []
+        candidates_resume = [_readable_resume(c) for c in candidates]
+
+        prompt = f"""Score each candidate's fit for the job below. Return ONLY valid JSON.
+
+Job: {job_desc[:3000]}
+
+SCORING RUBRIC (apply strictly):
+- overallScore is a 0-100 fit score combining required-skills match and experience.
+- Skills dominate: a candidate matching MOST required skills = 60-100; a partial match = 40-75; a poor match (few/no required skills) = 20-45.
+- Candidates with NO skills data at all: score 45-55 and recommend "consider" — NEVER "reject" merely because their skills are missing.
+- Experience: candidates meeting the required years = 70-100; close (>=50%) = 45-75; far below = 20-45; no experience data = 45-55.
+- recommendation: "strong" = overallScore >= 65, "consider" = 40-64, "reject" = < 40. Only "reject" when the candidate clearly lacks required skills AND/OR is far below the experience bar (and that data is present).
+- matchingSkills: required skills actually present in the candidate's resume/skills (exact or close match).
+- missingSkills: required skills absent from the candidate.
+
+Candidates:
+{json.dumps(candidates_resume)[:12000]}
+
+Return JSON:
+{{"ranked": [{{"name": "", "overallScore": 0-100, "skillsScore": 0-100, "experienceScore": 0-100,
+  "recommendation": "strong|consider|reject", "matchingSkills": [], "missingSkills": [],
+  "feedback": "", "reasons": []}}]}}"""
         system = get_system_prompt("recruiter")
+        ranked = []
         try:
             result = await llm_service.generate(
                 brain_name="recruiter", prompt=prompt, system=system,
-                temperature=0.1, max_tokens=1024,
+                temperature=0.1, max_tokens=2048,
             )
             parsed = validate_json_strict(result, "object") or {}
-            if "overallScore" in parsed or "score" in parsed:
-                return BrainResult(response=parsed, execution_time=time.perf_counter() - start)
-            return BrainResult(
-                response={"overallScore": 50, "skillsScore": 50, "reasons": ["AI evaluation unavailable"]},
-                execution_time=time.perf_counter() - start,
-            )
+            ranked = parsed.get("ranked") or []
+            if not isinstance(ranked, list):
+                ranked = [parsed]
+            if not ranked:
+                raise ValueError("LLM returned no ranked list")
         except Exception as e:
-            return BrainResult(
-                response={"overallScore": 50, "skillsScore": 50, "reasons": [str(e)]},
-                metadata={"fallback": True, "error": str(e)},
-            )
+            logger.warning("LLM ranking failed (%s) — using deterministic scoring", e)
+            ranked = [self._deterministic_score(c, job_skills_list) for c in candidates_resume]
+
+        ranked = [r for r in ranked if isinstance(r, dict)]
+        for r in ranked:
+            name = r.get("name") or ""
+            if name:
+                src = next((c for c in candidates if (c.get("name") or c.get("fullName") or "") == name), None)
+                if src:
+                    r["skills"] = r.get("matchingSkills") or src.get("skills") or []
+        ranked.sort(key=lambda r: r.get("overallScore") or 0, reverse=True)
+        return BrainResult(
+            response={"ranked": ranked, "candidates": ranked, "total_count": len(ranked)},
+            execution_time=time.perf_counter() - start,
+        )
+
+    def _deterministic_score(self, candidate: dict, job_skills: list) -> dict:
+        """Rule-based fallback scoring so the rank endpoint never returns empty when the LLM fails."""
+        name = candidate.get("name") or candidate.get("fullName") or "Candidate"
+
+        def _skill_list(raw) -> list:
+            if isinstance(raw, list):
+                return [str(s).strip() for s in raw if str(s).strip()]
+            if isinstance(raw, str) and raw.strip():
+                return [s.strip() for s in raw.split(",") if s.strip()]
+            return []
+
+        cand_skills = _skill_list(candidate.get("skills"))
+        text_skills = []
+        for key in ("resume", "summary", "profileSummary"):
+            raw = candidate.get(key) or ""
+            if raw:
+                text_skills.append(str(raw))
+        text_skills = " ".join(text_skills).lower()
+
+        cl = [s.lower() for s in cand_skills]
+        matching = []
+        missing = []
+        for js in job_skills:
+            jl = js.lower()
+            hit = any(js.lower() in s or s in jl for s in cl) or (jl and jl in text_skills)
+            if hit:
+                matching.append(js)
+            else:
+                missing.append(js)
+
+        if job_skills:
+            if cand_skills or text_skills:
+                skills_score = max(20, round((len(matching) / len(job_skills)) * 100))
+            else:
+                skills_score = 45
+        else:
+            skills_score = 65
+
+        def _years(raw) -> float:
+            m = re.search(r"(\d+(?:\.\d+)?)\s*(?:years?|yrs|y)", str(raw or ""))
+            return float(m.group(1)) if m else 0.0
+
+        exp_raw = candidate.get("yearsExp") or candidate.get("experience")
+        cand_years = _years(exp_raw) if not isinstance(exp_raw, (int, float)) else float(exp_raw or 0)
+        has_exp = bool(exp_raw)
+        required_map = {"Entry": 0, "Mid": 2, "Senior": 5, "Lead": 8}
+        required_years = required_map.get(str(candidate.get("experienceLevel") or "").title(), 2)
+        if required_years == 0:
+            exp_score = 85
+        elif not has_exp:
+            exp_score = 50
+        elif cand_years >= required_years:
+            exp_score = min(100, 85 + min(15, (cand_years - required_years) * 3))
+        else:
+            ratio = cand_years / required_years
+            exp_score = 45 if ratio < 0.5 else (60 if ratio < 0.8 else 80)
+
+        overall = round((skills_score * 0.6) + (exp_score * 0.4))
+        if overall >= 65:
+            recommendation = "strong"
+        elif overall >= 40:
+            recommendation = "consider"
+        else:
+            recommendation = "consider" if not (cand_skills or has_exp or job_skills) else "reject"
+        reasons = []
+        if matching:
+            reasons.append(f"Skills matched: {', '.join(matching)}")
+        if missing:
+            reasons.append(f"Missing skills: {', '.join(missing)}")
+        if not cand_skills and not has_exp:
+            reasons.append("Limited candidate profile data — score is a neutral estimate")
+        return {
+            "name": name,
+            "overallScore": overall,
+            "skillsScore": skills_score,
+            "experienceScore": exp_score,
+            "recommendation": recommendation,
+            "matchingSkills": matching,
+            "missingSkills": missing,
+            "feedback": "; ".join(reasons) if reasons else "Rule-based estimate (AI unavailable)",
+            "reasons": reasons,
+        }
 
     def _fallback_search(self, context: dict) -> dict:
         skills = context.get("skills", ["Python", "JavaScript"])

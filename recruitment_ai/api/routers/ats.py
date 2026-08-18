@@ -29,6 +29,7 @@ async def ats_analyze(resume_text: str, job_description: str, user: dict = Depen
         "intent": "ATS_SCORE",
         "session": {"id": None}, "conversation": {}, "context_data": {}, "retrieved_documents": {},
         "provider_info": {}, "execution": {}, "response": None, "error": None, "metadata": {},
+        "context": {}, "retrieved_context": [], "memory": [], "provider": "", "model": "",
     }
     result = await graph.ainvoke(state)
     r = result.get("result") or {}

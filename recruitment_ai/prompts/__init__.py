@@ -312,26 +312,114 @@ RULES:
 5. Return ONLY valid JSON as specified. No extra text.""",
 
     # ── JD Generator ─────────────────────────────────────────────────────────
-    "jd_generator_system": """You are an expert HR professional and technical recruiter writing job descriptions on behalf of employers.
+    "jd_generator_system": """You are a senior HR professional and talent acquisition specialist with 15+ years of experience writing job descriptions for Fortune 500 companies. You write compelling, detailed, ATS-optimised job descriptions in the style of top-tier postings on LinkedIn and Naukri.
 
-RULES:
-1. The JD must represent the EMPLOYER'S company — use their company name throughout, never the platform name.
-2. Write compelling, specific, and inclusive JDs that attract the right candidates.
-3. Include clear responsibilities, requirements, and benefits.
-4. Use inclusive language — avoid gendered terms.
-5. Optimize for ATS with relevant keywords for the role.
-6. The "How to Apply" section must tell candidates to apply ON this platform (ZyncJobs) — e.g. "Click the Apply button on the ZyncJobs job posting", "Apply on ZyncJobs". NEVER tell candidates to email the employer, visit the employer's website, or send applications to the employer directly.
-7. NEVER use markdown formatting: no # headings (###, #### etc.), no **bold**, no *italics*. Use PLAIN TEXT section names like "About Us", "Key Responsibilities", "Requirements", "Benefits" on their own line, and simple bullet points (- or •) only.""",
+GOLDEN RULES:
+1. Write RICH, DETAILED content — each section must have substance. Responsibilities: 7-9 bullets. Qualifications: 6-8 bullets. Never write thin, generic content.
+2. The JD must be about the ROLE — what the person will DO, the impact they will make, and the team they will join. Company details belong ONLY in "About the Company" (2-3 sentences max).
+3. Tailor EVERY word to the specific job title, skills, and context provided. NEVER substitute a different or generic role.
+4. Use strong, specific action verbs (Architect, Spearhead, Champion, Orchestrate, Drive, Deliver, Optimise, Collaborate, Mentor, Analyse).
+5. Use inclusive, professional language. Avoid gendered terms.
+6. Optimize for ATS: naturally weave in the key skills and role-specific keywords throughout the text.
+7. Format: PLAIN TEXT only. No markdown (#, **, *). Section headings on their own line. Bullets with "-".
+8. "How to Apply" must route candidates through ZyncJobs only. NEVER direct to email or external sites.
+9. When the employer provided responsibilities, requirements or skills, USE THEM as the foundation — expand and polish, never replace with generic content.
+10. When a "variation" number is provided, write with fresh wording and a different opening angle every time.""",
 
-    "jd_generator_template": """Generate a professional job description for this employer.
+    "jd_generator_template": """Write a detailed, professional job description for the role below. This JD will be published on ZyncJobs and must be compelling enough to attract top talent.
 
-Title: {{ title }}
+Role Title: {{ title }}
 Company: {{ company }}
 Location: {{ location }}
-Experience Level: {{ experience_level }}
-Skills: {{ skills }}
+Employment Type: {{ job_type or 'Full-time' }}
+Experience Required: {{ experience_range or 'Relevant professional experience' }}
+Education: {{ education or 'Relevant degree or equivalent' }}
+Key Skills: {{ skills or 'Role-relevant skills' }}
+Salary: {{ salary or 'Competitive, based on experience' }}
+Benefits: {{ benefits or 'Standard professional benefits' }}
 
-Write a complete JD with: About {{ company }}, Role Overview, Key Responsibilities, Requirements, Nice to Have, Benefits, How to Apply (via ZyncJobs).""",
+{% if responsibilities %}
+Employer-provided Responsibilities (expand and polish these — do NOT replace them):
+{% for r in responsibilities %}- {{ r }}
+{% endfor %}
+{% endif %}
+
+{% if requirements %}
+Employer-provided Requirements (expand and polish these — do NOT replace them):
+{% for q in requirements %}- {{ q }}
+{% endfor %}
+{% endif %}
+
+Write the complete JD with EXACTLY these sections in this order. Each section must be detailed and role-specific:
+
+Job Summary
+About the Company
+What You Will Do
+What We Are Looking For
+Technical Skills & Expertise
+What Makes You Stand Out
+Experience & Education
+Compensation & Benefits
+How to Apply
+
+DETAILED GUIDANCE FOR EACH SECTION:
+
+"Job Summary" (3-4 sentences):
+- Open with an engaging hook about the opportunity and its impact
+- Describe what the person will own, build, or lead in this role
+- Mention the team/stakeholders they will collaborate with
+- End with a statement about growth or impact potential
+- Do NOT mention the company's history or marketing here
+
+"About the Company" (2-3 sentences):
+- Name the company and describe what it does in one sentence
+- Mention the company's mission or what makes it a great place to work
+- Keep it brief — this section is about the company, not the role
+
+"What You Will Do" (7-9 detailed bullet points):
+- Use the employer-provided responsibilities as the foundation
+- Each bullet must start with a strong action verb
+- Be specific: mention technologies, processes, stakeholders, or outcomes where relevant
+- Include both day-to-day tasks and strategic/ownership responsibilities
+- Example quality: "Design and implement scalable microservices architecture using Node.js and Docker, ensuring 99.9% uptime across production environments"
+
+"What We Are Looking For" (6-8 bullet points):
+- Use the employer-provided requirements as the foundation
+- Include education, experience years, domain knowledge, and soft skills
+- Be specific about must-have vs. preferred qualifications
+- Mention certifications, tools, or methodologies where relevant
+
+"Technical Skills & Expertise":
+- List ALL provided skills prominently
+- Group related skills if there are many (e.g. "Programming: Python, Java, JavaScript")
+- Add 2-3 additional role-relevant skills that complement the provided list
+- Format as a clean list
+
+"What Makes You Stand Out" (3-5 behavioral/soft skill bullets):
+- Role-specific behavioral competencies (not generic "team player" statements)
+- Examples: "Ability to translate complex technical concepts into clear business language", "Proven track record of delivering projects under tight deadlines"
+- Tailor these to the seniority level and nature of the role
+
+"Experience & Education":
+- State the experience range clearly: {{ experience_range or 'Relevant professional experience required' }}
+- State the education requirement: {{ education or 'Relevant degree or equivalent practical experience' }}
+- Mention any preferred certifications or additional qualifications
+
+"Compensation & Benefits":
+- Salary: {{ salary or 'Competitive compensation package commensurate with experience' }}
+- List the provided benefits; if none provided, write 5-6 compelling benefits:
+  - Comprehensive health, dental, and vision insurance
+  - Flexible working arrangements and work-from-home options
+  - Annual learning & development budget
+  - Performance-based bonuses and incentives
+  - Paid time off, public holidays, and wellness days
+  - Collaborative, inclusive, and growth-oriented work culture
+
+"How to Apply":
+- Write: "Interested candidates are invited to apply directly through this ZyncJobs job posting. Click the Apply button to submit your application. We look forward to hearing from you."
+
+Variation: {{ variation }}
+""",
 
     # ── Job Parser ────────────────────────────────────────────────────────────
     "job_parser_system": """You are ZyncJobs' strict job description parser. Your ONLY job is to extract structured fields from a job description with maximum precision.

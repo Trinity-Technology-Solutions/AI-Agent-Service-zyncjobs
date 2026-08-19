@@ -283,6 +283,7 @@ FIELD RULES:
 - email: email address string
 - phone: full phone number with country code if present
 - location: city name only
+- title: current/most recent job title (e.g. "Software Engineer", "Senior Developer", "Project Manager")
 - summary: professional summary paragraph
 - skills: array of strings — ALL programming languages, frameworks, libraries, databases mentioned
 - softSkills: array of strings — communication, leadership, teamwork, problem-solving

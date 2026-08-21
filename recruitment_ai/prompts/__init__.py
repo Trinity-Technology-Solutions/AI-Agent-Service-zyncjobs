@@ -282,19 +282,24 @@ FIELD RULES:
 - name: Full name only (2-4 words, Title Case). Never letter-space it.
 - email: email address string
 - phone: full phone number with country code if present
+- dob: date of birth if stated (e.g. "15/06/2002" or "15 Jun 2002"), else empty string
 - location: city name only
+- country: country name (e.g. "India")
 - title: current/most recent job title (e.g. "Software Engineer", "Senior Developer", "Project Manager")
 - summary: professional summary paragraph
 - skills: array of strings — ALL programming languages, frameworks, libraries, databases mentioned
 - softSkills: array of strings — communication, leadership, teamwork, problem-solving
 - tools: array of strings — Git, Docker, Figma, Jira, Postman
-- workExperiences: array of objects — each has: jobTitle, company, date, descriptions (array of strings)
+- workExperiences: array of objects — each has: jobTitle, company, date, descriptions (array of strings). PROFESSIONAL jobs ONLY — student internships NEVER go here
+- internships: array of objects — each has: jobTitle, company, date, descriptions (array of strings). Internships/training/industrial training ONLY — never mix with workExperiences
 - educations: array of objects with EXACTLY: { "degree": string, "school": string, "date": string, "gpa": string }
   * degree = qualification label: "B.Tech", "HSC", "SSLC"
   * school = full institution name
   * NEVER put degree label in school field or vice versa
 - projects: array of objects — each has: name (actual project title), descriptions (array of strings)
 - certifications: array of objects — each has: name, provider, date
+- languages: array of strings — spoken/written languages (English, Tamil, Hindi...)
+- awards: array of strings — achievements/awards/competition wins
 - competitions: array of strings
 
 Return ONLY valid JSON.

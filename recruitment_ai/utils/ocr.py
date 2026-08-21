@@ -40,7 +40,7 @@ def extract_text(file_content: str, file_type: str) -> str:
     """
     file_type = (file_type or "txt").lower().strip(".")
 
-    if file_type == "txt":
+    if file_type in ("txt", "text"):
         return file_content
 
     try:

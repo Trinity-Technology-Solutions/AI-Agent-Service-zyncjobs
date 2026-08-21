@@ -27,7 +27,7 @@ class ResumeParserBrain(Brain):
         if not self._is_resume(content):
             return BrainResult(success=False, response={"error": "The uploaded file does not appear to be a resume. Please upload a valid resume."})
 
-        prompt = get_prompt("resume_parser_prompt", resume_text=content[:8000])
+        prompt = get_prompt("resume_parser_prompt", resume_text=content[:12000])
         system = get_system_prompt("resume_parser")
 
         try:

@@ -273,36 +273,159 @@ Return JSON:
 }""",
 
     # ── Resume Parser ─────────────────────────────────────────────────────────
-    "resume_parser_system": """You are the ZyncJobs Resume Parser — you extract structured data from resumes with high accuracy.
-Return ONLY a single valid JSON object. No markdown, no code blocks, no explanation.""",
+    "resume_parser_system": """You are the ZyncJobs Resume Parser — an expert system that extracts structured data from resumes with maximum precision.
+
+CRITICAL RULES:
+1. Return ONLY a single valid JSON object. No markdown, no code blocks, no explanation.
+2. NEVER invent, hallucinate, or guess information not present in the resume.
+3. If a field cannot be confidently extracted, use empty string "" or empty array [].
+4. All fields must be extracted from the ACTUAL resume text provided.
+5. Handle Indian resume formats specifically (SSLC/HSC, CGPA, Indian cities, +91 phone format).""",
 
     "resume_parser_prompt": """Parse the resume text below into a JSON object.
 
-FIELD RULES:
-- name: Full name only (2-4 words, Title Case). Never letter-space it.
-- email: email address string
-- phone: full phone number with country code if present
+FIELD RULES — FOLLOW EXACTLY:
+- name: Full name only (2-4 words, Title Case). Never letter-space it. Extract from top of resume.
+- email: email address string (exact match from text)
+- phone: full phone number with country code if present (e.g., "+91 98765 43210" or "9876543210")
 - dob: date of birth if stated (e.g. "15/06/2002" or "15 Jun 2002"), else empty string
-- location: city name only
-- country: country name (e.g. "India")
+- location: city name only (e.g., "Bangalore", "Chennai", "Mumbai")
+- country: country name (e.g. "India") — infer from phone/location if not stated
 - title: current/most recent job title (e.g. "Software Engineer", "Senior Developer", "Project Manager")
-- summary: professional summary paragraph
-- skills: array of strings — ALL programming languages, frameworks, libraries, databases mentioned
-- softSkills: array of strings — communication, leadership, teamwork, problem-solving
-- tools: array of strings — Git, Docker, Figma, Jira, Postman
+- summary: professional summary paragraph (max 500 chars)
+- skills: array of strings — ALL technical skills: programming languages, frameworks, libraries, databases, cloud, tools
+- softSkills: array of strings — communication, leadership, teamwork, problem-solving (only if explicitly mentioned)
+- tools: array of strings — Git, Docker, Figma, Jira, Postman, IDEs, CI/CD tools
 - workExperiences: array of objects — each has: jobTitle, company, date, descriptions (array of strings). PROFESSIONAL jobs ONLY — student internships NEVER go here
 - internships: array of objects — each has: jobTitle, company, date, descriptions (array of strings). Internships/training/industrial training ONLY — never mix with workExperiences
 - educations: array of objects with EXACTLY: { "degree": string, "school": string, "date": string, "gpa": string }
-  * degree = qualification label: "B.Tech", "HSC", "SSLC"
-  * school = full institution name
+  * degree = qualification label: "B.Tech", "M.Tech", "MBA", "B.E", "MCA", "BCA", "HSC", "SSLC", "10th", "12th"
+  * school = full institution name (e.g., "Indian Institute of Technology Madras", "Loyola College")
+  * date = graduation year or range (e.g., "2020", "2018-2022")
+  * gpa = CGPA/percentage if stated (e.g., "8.5 CGPA", "85%")
   * NEVER put degree label in school field or vice versa
 - projects: array of objects — each has: name (actual project title), descriptions (array of strings)
 - certifications: array of objects — each has: name, provider, date
-- languages: array of strings — spoken/written languages (English, Tamil, Hindi...)
+- languages: array of strings — spoken/written languages (English, Tamil, Hindi, etc.)
 - awards: array of strings — achievements/awards/competition wins
 - competitions: array of strings
 
-Return ONLY valid JSON.
+SECTION DETECTION HINTS:
+The resume text is pre-labeled with section markers like [EXPERIENCE], [EDUCATION], [SKILLS], etc. Use these to accurately categorize content.
+
+EXAMPLES:
+
+Example 1 — Indian fresher resume:
+[HEADER]
+RAHUL SHARMA
+rahul.sharma@email.com | +91 98765 43210 | Bangalore
+[SUMMARY]
+Motivated Computer Science graduate with strong foundation in Python, Django, and React. Seeking entry-level backend role.
+[EDUCATION]
+B.Tech Computer Science | Indian Institute of Technology Madras | 2020-2024 | 8.5 CGPA
+HSC | Kendriya Vidyalaya | 2020 | 92%
+SSLC | Kendriya Vidyalaya | 2018 | 95%
+[SKILLS]
+Python, Django, React, JavaScript, PostgreSQL, Docker, Git, AWS
+[INTERNSHIPS]
+Backend Intern | TechCorp Solutions | Jun 2023 - Aug 2023
+- Developed REST APIs using Django REST Framework
+- Optimized database queries reducing response time by 30%
+[PROJECTS]
+E-commerce API | Built scalable e-commerce backend with Django, PostgreSQL, Redis
+[CERTIFICATIONS]
+AWS Cloud Practitioner | Amazon Web Services | 2023
+[LANGUAGES]
+English, Hindi, Tamil
+
+Expected JSON:
+{
+  "name": "Rahul Sharma",
+  "email": "rahul.sharma@email.com",
+  "phone": "+91 98765 43210",
+  "dob": "",
+  "location": "Bangalore",
+  "country": "India",
+  "title": "Backend Developer",
+  "summary": "Motivated Computer Science graduate with strong foundation in Python, Django, and React. Seeking entry-level backend role.",
+  "skills": ["Python", "Django", "React", "JavaScript", "PostgreSQL", "Docker", "Git", "AWS"],
+  "softSkills": [],
+  "tools": ["Git", "Docker"],
+  "workExperiences": [],
+  "internships": [
+    {"jobTitle": "Backend Intern", "company": "TechCorp Solutions", "date": "Jun 2023 - Aug 2023", "descriptions": ["Developed REST APIs using Django REST Framework", "Optimized database queries reducing response time by 30%"]}
+  ],
+  "educations": [
+    {"degree": "B.Tech", "school": "Indian Institute of Technology Madras", "date": "2020-2024", "gpa": "8.5 CGPA"},
+    {"degree": "HSC", "school": "Kendriya Vidyalaya", "date": "2020", "gpa": "92%"},
+    {"degree": "SSLC", "school": "Kendriya Vidyalaya", "date": "2018", "gpa": "95%"}
+  ],
+  "projects": [{"name": "E-commerce API", "descriptions": ["Built scalable e-commerce backend with Django, PostgreSQL, Redis"]}],
+  "certifications": [{"name": "AWS Cloud Practitioner", "provider": "Amazon Web Services", "date": "2023"}],
+  "languages": ["English", "Hindi", "Tamil"],
+  "awards": [],
+  "competitions": []
+}
+
+Example 2 — Experienced professional:
+[HEADER]
+PRIYA PATEL
+priya.patel@company.com | +91-98765-43210 | Mumbai, Maharashtra
+[SUMMARY]
+Senior Software Engineer with 6+ years building scalable microservices using Java, Spring Boot, and AWS. Led team of 5 engineers.
+[EXPERIENCE]
+Senior Software Engineer | Infosys | Jan 2020 - Present
+- Architected microservices migration reducing deployment time by 60%
+- Mentored 3 junior developers and established code review practices
+Software Engineer | TCS | Jul 2017 - Dec 2019
+- Built REST APIs handling 10K+ requests/day using Spring Boot
+[EDUCATION]
+M.Tech Computer Science | IIT Bombay | 2015-2017 | 9.1 CGPA
+B.E Computer Engineering | VJTI Mumbai | 2011-2015 | 8.2 CGPA
+[SKILLS]
+Java, Spring Boot, Spring Cloud, Microservices, AWS, Docker, Kubernetes, PostgreSQL, Redis, Kafka, Git, Jenkins
+[PROJECTS]
+Payment Gateway Integration | Integrated Razorpay and Stripe for multi-currency payments
+[CERTIFICATIONS]
+AWS Solutions Architect Associate | Amazon Web Services | 2021
+Oracle Certified Professional Java SE 11 | Oracle | 2019
+[LANGUAGES]
+English, Hindi, Gujarati
+[AWARDS]
+Employee of the Year | Infosys | 2022
+Best Innovation Award | TCS | 2018
+
+Expected JSON:
+{
+  "name": "Priya Patel",
+  "email": "priya.patel@company.com",
+  "phone": "+91-98765-43210",
+  "dob": "",
+  "location": "Mumbai",
+  "country": "India",
+  "title": "Senior Software Engineer",
+  "summary": "Senior Software Engineer with 6+ years building scalable microservices using Java, Spring Boot, and AWS. Led team of 5 engineers.",
+  "skills": ["Java", "Spring Boot", "Spring Cloud", "Microservices", "AWS", "Docker", "Kubernetes", "PostgreSQL", "Redis", "Kafka", "Git", "Jenkins"],
+  "softSkills": ["Leadership", "Mentoring", "Code Review"],
+  "tools": ["Git", "Jenkins", "Docker", "Kubernetes"],
+  "workExperiences": [
+    {"jobTitle": "Senior Software Engineer", "company": "Infosys", "date": "Jan 2020 - Present", "descriptions": ["Architected microservices migration reducing deployment time by 60%", "Mentored 3 junior developers and established code review practices"]},
+    {"jobTitle": "Software Engineer", "company": "TCS", "date": "Jul 2017 - Dec 2019", "descriptions": ["Built REST APIs handling 10K+ requests/day using Spring Boot"]}
+  ],
+  "internships": [],
+  "educations": [
+    {"degree": "M.Tech", "school": "IIT Bombay", "date": "2015-2017", "gpa": "9.1 CGPA"},
+    {"degree": "B.E", "school": "VJTI Mumbai", "date": "2011-2015", "gpa": "8.2 CGPA"}
+  ],
+  "projects": [{"name": "Payment Gateway Integration", "descriptions": ["Integrated Razorpay and Stripe for multi-currency payments"]}],
+  "certifications": [
+    {"name": "AWS Solutions Architect Associate", "provider": "Amazon Web Services", "date": "2021"},
+    {"name": "Oracle Certified Professional Java SE 11", "provider": "Oracle", "date": "2019"}
+  ],
+  "languages": ["English", "Hindi", "Gujarati"],
+  "awards": ["Employee of the Year", "Best Innovation Award"],
+  "competitions": []
+}
 
 Resume Text:
 {{ resume_text }}""",

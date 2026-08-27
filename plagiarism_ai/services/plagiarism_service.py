@@ -170,18 +170,27 @@ class PlagiarismService:
                     most_similar_text = ext_data["text"]
                     matched_url = ext_data["url"]
 
-            if highest_similarity > 0.85:
+            if highest_similarity > 0.80:
                 sources_found.add(matched_url)
                 analysis = self.analyze_plagiarism(internal_chunk.text, most_similar_text)
-                if analysis.isPlagiarized:
-                    analysis.matchedUrl = matched_url
-                    matches.append(PlagiarismMatch(
-                        textChunk=internal_chunk.text,
-                        matchedUrl=matched_url,
-                        similarityScore=highest_similarity,
-                        analysis=analysis
-                    ))
-                    break # Stop checking this chunk after first match to save time
+                
+                # Fallback: If LLM timed out or returned False, trust high vector similarity!
+                if not analysis.isPlagiarized:
+                    analysis = QwenAnalysisResult(
+                        isPlagiarized=True,
+                        confidenceScore=highest_similarity,
+                        reasoning=f"High semantic vector similarity match ({highest_similarity * 100:.1f}%) detected with external source.",
+                        suggestedAction="Review content for originality."
+                    )
+
+                analysis.matchedUrl = matched_url
+                matches.append(PlagiarismMatch(
+                    textChunk=internal_chunk.text,
+                    matchedUrl=matched_url,
+                    similarityScore=highest_similarity,
+                    analysis=analysis
+                ))
+                break # Stop checking this chunk after first match to save time
         return matches
 
     def check_article(self, article_text: str) -> PlagiarismReport:

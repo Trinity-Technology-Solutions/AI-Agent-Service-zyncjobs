@@ -126,7 +126,7 @@ class PlagiarismService:
             ext_chunks = TextChunker.chunk_text(text)
             for ext_chunk in ext_chunks:
                 for internal_chunk in internal_chunks:
-                    if self._get_overlap_ratio(internal_chunk.text, ext_chunk.text) > 0.35:
+                    if self._get_overlap_ratio(internal_chunk.text, ext_chunk.text) > 0.25:
                         candidate_external_chunks.append({
                             "url": url,
                             "text": ext_chunk.text,
@@ -170,7 +170,7 @@ class PlagiarismService:
                     most_similar_text = ext_data["text"]
                     matched_url = ext_data["url"]
 
-            if highest_similarity > 0.90:
+            if highest_similarity > 0.87:
                 sources_found.add(matched_url)
                 analysis = self.analyze_plagiarism(internal_chunk.text, most_similar_text)
                 

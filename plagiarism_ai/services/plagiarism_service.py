@@ -49,7 +49,7 @@ class PlagiarismService:
                 f"{self.lm_base_url}/embeddings",
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json={"model": self.embed_model, "input": texts},
-                timeout=30
+                timeout=120
             )
             response.raise_for_status()
             data = response.json().get("data", [])
@@ -83,7 +83,7 @@ class PlagiarismService:
                     ],
                     "temperature": 0.1
                 },
-                timeout=30
+                timeout=120
             )
             response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
@@ -126,7 +126,7 @@ class PlagiarismService:
             ext_chunks = TextChunker.chunk_text(text)
             for ext_chunk in ext_chunks:
                 for internal_chunk in internal_chunks:
-                    if self._get_overlap_ratio(internal_chunk.text, ext_chunk.text) > 0.15:
+                    if self._get_overlap_ratio(internal_chunk.text, ext_chunk.text) > 0.35:
                         candidate_external_chunks.append({
                             "url": url,
                             "text": ext_chunk.text,
@@ -135,7 +135,7 @@ class PlagiarismService:
                         break # Move to next external chunk if it matches any internal chunk
 
         # Generate embeddings for the vastly reduced candidate list
-        batch_size = 100
+        batch_size = 15
         for i in range(0, len(candidate_external_chunks), batch_size):
             batch = candidate_external_chunks[i:i + batch_size]
             batch_texts = [b["text"] for b in batch]
@@ -170,7 +170,7 @@ class PlagiarismService:
                     most_similar_text = ext_data["text"]
                     matched_url = ext_data["url"]
 
-            if highest_similarity > 0.80:
+            if highest_similarity > 0.90:
                 sources_found.add(matched_url)
                 analysis = self.analyze_plagiarism(internal_chunk.text, most_similar_text)
                 

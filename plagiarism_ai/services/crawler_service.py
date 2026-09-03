@@ -44,23 +44,20 @@ class CrawlerService:
 
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # 1. Extract specific article URLs and headlines from link tags
-            from urllib.parse import urljoin
-            for a in soup.find_all('a', href=True):
-                headline_text = a.get_text(strip=True)
-                if len(headline_text) > 15:
-                    link = urljoin(url, a['href'])
-                    if link.startswith('http') and not link.endswith('#') and len(link) > len(url) + 5:
-                        results[link] = headline_text
-
-            # 2. Extract full page text under main homepage URL
-            for element in soup(["script", "style", "noscript", "nav", "header", "footer"]):
+            # Remove all non-article boilerplate elements (nav, ads, sidebars, etc.)
+            for element in soup(["script", "style", "noscript", "nav", "header",
+                                  "footer", "iframe", "aside", "form", "button"]):
                 element.extract()
-            for element in soup.find_all(class_=["ads", "sidebar", "menu", "footer"]):
+            for element in soup.find_all(class_=["ads", "sidebar", "menu", "footer",
+                                                   "related", "share", "social",
+                                                   "advertisement", "banner", "popup"]):
                 element.extract()
 
+            # Only store full page body text. Do NOT store individual link headlines.
+            # Short 15-30 char headlines are too generic and cause false positive matches.
             text = soup.get_text(separator=' ', strip=True)
-            if text:
+            # Require minimum content length to avoid matching boilerplate-only pages
+            if text and len(text) > 300:
                 results[url] = text
 
             return results

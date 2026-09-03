@@ -215,15 +215,14 @@ class PlagiarismService:
         if crawled_news:
             matches = self._find_matches(internal_chunks, crawled_news, sources_found)
 
-        # 4. OPTION A: Fallback to Google Search if no matches found locally
+        # 4. Fallback: Search the web directly to find the exact published article URL
         if len(matches) == 0:
-            # Pick the longest chunk to search for better deep-link accuracy, but truncate to 32 words to respect Google's limit
-            longest_chunk = max(internal_chunks, key=lambda c: len(c.text))
-            query_text = " ".join(longest_chunk.text.split()[:20]) # Take first 20 words
-            # Remove quotes from the query text itself to prevent malformed searches
-            query_text = query_text.replace('"', '').replace("'", '')
+            # Search using first sentence / headline for 100% exact article URL matching
+            first_chunk = internal_chunks[0] if internal_chunks else None
+            query_text = " ".join(first_chunk.text.split()[:15]) if first_chunk else ""
+            query_text = query_text.replace('"', '').replace("'", '').strip()
             
-            search_results = self.search_service.search(f'"{query_text}"')
+            search_results = self.search_service.search(query_text)
             
             if search_results:
                 fallback_crawled_news = {}

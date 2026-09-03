@@ -172,16 +172,13 @@ class PlagiarismService:
 
             if highest_similarity > 0.85:
                 sources_found.add(matched_url)
-                analysis = self.analyze_plagiarism(internal_chunk.text, most_similar_text)
-                
-                # Fallback: If LLM timed out or returned False, trust high vector similarity!
-                if not analysis.isPlagiarized:
-                    analysis = QwenAnalysisResult(
-                        isPlagiarized=True,
-                        confidenceScore=highest_similarity,
-                        reasoning=f"High semantic vector similarity match ({highest_similarity * 100:.1f}%) detected with external source.",
-                        suggestedAction="Review content for originality."
-                    )
+                # Instant vector match analysis without blocking on slow CPU LLM text generation
+                analysis = QwenAnalysisResult(
+                    isPlagiarized=True,
+                    confidenceScore=highest_similarity,
+                    reasoning=f"High semantic vector similarity match ({highest_similarity * 100:.1f}%) detected with external source.",
+                    suggestedAction="Review content for originality."
+                )
 
                 analysis.matchedUrl = matched_url
                 matches.append(PlagiarismMatch(

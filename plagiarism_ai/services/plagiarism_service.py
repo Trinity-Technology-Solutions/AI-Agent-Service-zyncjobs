@@ -170,7 +170,7 @@ class PlagiarismService:
                     most_similar_text = ext_data["text"]
                     matched_url = ext_data["url"]
 
-            if highest_similarity > 0.87:
+            if highest_similarity > 0.85:
                 sources_found.add(matched_url)
                 analysis = self.analyze_plagiarism(internal_chunk.text, most_similar_text)
                 

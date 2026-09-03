@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 from typing import Dict
+from urllib.parse import urljoin
 import concurrent.futures
 
 class CrawlerService:
@@ -44,21 +45,42 @@ class CrawlerService:
 
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # Remove all non-article boilerplate elements (nav, ads, sidebars, etc.)
-            for element in soup(["script", "style", "noscript", "nav", "header",
-                                  "footer", "iframe", "aside", "form", "button"]):
-                element.extract()
-            for element in soup.find_all(class_=["ads", "sidebar", "menu", "footer",
-                                                   "related", "share", "social",
-                                                   "advertisement", "banner", "popup"]):
-                element.extract()
+            # 1. Discover actual article links from the homepage
+            article_links = []
+            for a in soup.find_all('a', href=True):
+                href = a['href']
+                full_link = urljoin(url, href)
+                if (full_link.startswith('http') and 
+                    len(full_link) > len(url) + 10 and 
+                    not full_link.endswith(('.jpg', '.png', '.jpeg', '.pdf', '.svg', '#')) and
+                    not any(x in full_link for x in ['/tag/', '/category/', '/author/', '/contact', '/about', '/privacy', '/terms'])):
+                    if full_link not in article_links:
+                        article_links.append(full_link)
 
-            # Only store full page body text. Do NOT store individual link headlines.
-            # Short 15-30 char headlines are too generic and cause false positive matches.
-            text = soup.get_text(separator=' ', strip=True)
-            # Require minimum content length to avoid matching boilerplate-only pages
-            if text and len(text) > 300:
-                results[url] = text
+            # Limit to top 5 most recent article links per source to keep speed fast
+            article_links = article_links[:5]
+
+            # Scrape each discovered specific article link
+            for art_link in article_links:
+                try:
+                    art_resp = requests.get(art_link, headers=headers, timeout=3)
+                    if art_resp.status_code == 200:
+                        art_soup = BeautifulSoup(art_resp.text, 'html.parser')
+                        for el in art_soup(["script", "style", "noscript", "nav", "header", "footer", "aside"]):
+                            el.extract()
+                        body_text = art_soup.get_text(separator=' ', strip=True)
+                        if len(body_text) > 200:
+                            results[art_link] = body_text
+                except Exception:
+                    continue
+
+            # Fallback to main page text if deep links could not be fetched
+            if not results:
+                for el in soup(["script", "style", "noscript", "nav", "header", "footer", "aside"]):
+                    el.extract()
+                text = soup.get_text(separator=' ', strip=True)
+                if text and len(text) > 300:
+                    results[url] = text
 
             return results
         except Exception as e:
@@ -67,12 +89,7 @@ class CrawlerService:
 
     @staticmethod
     def get_latest_news() -> Dict[str, str]:
-        """
-        Fetches the front pages of target news websites in parallel.
-        Returns a dictionary mapping article URLs to text content.
-        """
         all_news: Dict[str, str] = {}
-        
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(CrawlerService.TARGET_SOURCES)) as executor:
             future_to_url = {executor.submit(CrawlerService._scrape_single_url, url): url for url in CrawlerService.TARGET_SOURCES}
             for future in concurrent.futures.as_completed(future_to_url):
@@ -83,5 +100,4 @@ class CrawlerService:
                         all_news.update(site_news)
                 except Exception as exc:
                     print(f'{url} generated an exception: {exc}')
-                    
         return all_news

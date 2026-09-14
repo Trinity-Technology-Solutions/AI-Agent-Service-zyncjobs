@@ -100,7 +100,14 @@ def _extract_docx(data: bytes) -> str:
     try:
         from docx import Document
         doc = Document(io.BytesIO(data))
-        return "\n".join(p.text for p in doc.paragraphs if p.text.strip()).strip()
+        lines = [p.text for p in doc.paragraphs if p.text.strip()]
+        # Also extract table cells — skills are often placed in DOCX tables
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if cell.text.strip():
+                        lines.append(cell.text.strip())
+        return "\n".join(lines).strip()
     except Exception as e:
         logger.warning("DOCX extraction failed: %s", e)
     return ""

@@ -10,6 +10,10 @@ logger = logging.getLogger("cost")
 COST_PER_1K_TOKENS = {
     "claude-sonnet": {"input": 0.003, "output": 0.015},
     "claude-haiku": {"input": 0.00025, "output": 0.00125},
+    "amazon.nova-micro-v1:0": {"input": 0.000035, "output": 0.00014},
+    "amazon.nova-lite-v1:0": {"input": 0.00006, "output": 0.00024},
+    "anthropic.claude-3-5-sonnet-20241022-v2:0": {"input": 0.003, "output": 0.015},
+    "anthropic.claude-3-haiku-20240307-v1:0": {"input": 0.00025, "output": 0.00125},
     "qwen2.5:3b": {"input": 0.0001, "output": 0.0002},
     "qwen3:8b": {"input": 0.0002, "output": 0.0004},
     "llama3.1:8b": {"input": 0.0002, "output": 0.0004},
@@ -19,7 +23,7 @@ DEFAULT_COST = {"input": 0.0003, "output": 0.0006}
 
 
 class CostLogger:
-    def estimate_cost(self, tokens: int, model: str = "qwen2.5:3b", output_tokens: Optional[int] = None) -> float:
+    def estimate_cost(self, tokens: int, model: str = "amazon.nova-micro-v1:0", output_tokens: Optional[int] = None) -> float:
         if tokens <= 0:
             return 0.0
         rates = COST_PER_1K_TOKENS.get(model, DEFAULT_COST)
@@ -27,7 +31,7 @@ class CostLogger:
         output_cost = ((output_tokens or tokens) / 1000) * rates["output"]
         return round(input_cost + output_cost, 6)
 
-    def log(self, brain_name: str, intent: str, result: BrainResult, model: str = "qwen2.5:3b", session_id: Optional[str] = None) -> None:
+    def log(self, brain_name: str, intent: str, result: BrainResult, model: str = "amazon.nova-micro-v1:0", session_id: Optional[str] = None) -> None:
         cost = self.estimate_cost(result.tokens, model)
         logger.info(json.dumps({
             "event": "cost",

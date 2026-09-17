@@ -14,3 +14,6 @@ dist/
 build/
 .pytest_cache/
 recruitment_ai/vector/vector_store/
+
+# IDE
+.vscode/

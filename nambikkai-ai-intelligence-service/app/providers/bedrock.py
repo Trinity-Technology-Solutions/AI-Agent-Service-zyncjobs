@@ -1,10 +1,12 @@
 import asyncio
 import json
+import os
 import time
 import uuid
 from typing import Any
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 
 from app.core.config import get_settings
@@ -21,37 +23,57 @@ class BedrockProvider(LLMProvider):
     """
     AWS Bedrock production provider.
 
-    Authentication relies entirely on the boto3 credential chain:
-    environment variables (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY /
-    AWS_SESSION_TOKEN), ~/.aws/credentials profile, or an attached IAM role.
-    No credentials are hardcoded or logged.
+    Authentication supports explicit environment/Pydantic settings as well
+    as the standard boto3 credential chain (~/.aws/credentials, IAM roles).
+    No credentials are hardcoded, logged, or exposed in exceptions/metadata.
 
     Activate with: AI_PROVIDER=bedrock
     """
 
     def __init__(self) -> None:
         self._settings = get_settings()
-        # Clients are initialised eagerly to avoid lazy-init races and to
-        # surface credential errors at startup rather than at first request.
-        self._runtime_client = boto3.client(
+
+        session_kwargs: dict[str, Any] = {}
+        if self._settings.AWS_ACCESS_KEY_ID:
+            session_kwargs["aws_access_key_id"] = self._settings.AWS_ACCESS_KEY_ID
+        if self._settings.AWS_SECRET_ACCESS_KEY:
+            session_kwargs["aws_secret_access_key"] = self._settings.AWS_SECRET_ACCESS_KEY
+        if self._settings.AWS_SESSION_TOKEN:
+            session_kwargs["aws_session_token"] = self._settings.AWS_SESSION_TOKEN
+
+        boto_config = Config(
+            connect_timeout=10,
+            read_timeout=float(self._settings.BEDROCK_TIMEOUT_SECONDS),
+            retries={"max_attempts": 2},
+        )
+
+        session = boto3.Session(**session_kwargs)
+        self._runtime_client = session.client(
             "bedrock-runtime",
             region_name=self._settings.AWS_REGION,
+            config=boto_config,
         )
-        self._bedrock_client = boto3.client(
+        self._bedrock_client = session.client(
             "bedrock",
             region_name=self._settings.AWS_REGION,
+            config=boto_config,
         )
+
+    def _get_effective_model_id(self) -> str:
+        model_id = self._settings.BEDROCK_MODEL_ID
+        if model_id == "amazon.nova-2-lite-v1:0":
+            return "global.amazon.nova-2-lite-v1:0"
+        return model_id
 
     async def generate_structured_analysis(self, evidence: EvidencePackage) -> EditorialAnalysis:
         settings = self._settings
         request_id = uuid.uuid4().hex[:12]
         user_prompt = _build_user_prompt(evidence)
         input_chars = len(_SYSTEM_PROMPT) + len(user_prompt)
+        effective_model_id = self._get_effective_model_id()
 
-        # Bedrock Converse API — unified interface across all supported models.
-        # Uses the same logical prompt contract as LMStudioProvider.
         payload = {
-            "modelId": settings.BEDROCK_MODEL_ID,
+            "modelId": effective_model_id,
             "system": [{"text": _SYSTEM_PROMPT}],
             "messages": [{"role": "user", "content": [{"text": user_prompt}]}],
             "inferenceConfig": {
@@ -65,8 +87,11 @@ class BedrockProvider(LLMProvider):
             extra={
                 "request_id": request_id,
                 "provider": "bedrock",
-                "model_id": settings.BEDROCK_MODEL_ID,
+                "model_id": effective_model_id,
                 "region": settings.AWS_REGION,
+                "timeout_seconds": settings.BEDROCK_TIMEOUT_SECONDS,
+                "max_tokens": settings.BEDROCK_MAX_TOKENS,
+                "temperature": settings.BEDROCK_TEMPERATURE,
                 "input_chars": input_chars,
             },
         )
@@ -86,7 +111,6 @@ class BedrockProvider(LLMProvider):
         except ClientError as exc:
             duration_ms = int((time.monotonic() - t_start) * 1000)
             code = exc.response["Error"]["Code"]
-            # Do not log the full ClientError — it may contain account details.
             logger.error(
                 "Bedrock ClientError",
                 extra={"request_id": request_id, "error_code": code, "duration_ms": duration_ms},
@@ -115,10 +139,6 @@ class BedrockProvider(LLMProvider):
         duration_ms = int((time.monotonic() - t_start) * 1000)
 
         # ── Parse Converse response ────────────────────────────────────────
-        # Converse response shape:
-        # {"output": {"message": {"content": [{"text": "..."}]}},
-        #  "stopReason": "end_turn" | "max_tokens" | ...,
-        #  "usage": {"inputTokens": N, "outputTokens": N}}
         try:
             stop_reason = response.get("stopReason")
             usage = response.get("usage", {})
@@ -136,6 +156,7 @@ class BedrockProvider(LLMProvider):
                 "stop_reason": stop_reason,
                 "input_tokens": usage.get("inputTokens"),
                 "output_tokens": usage.get("outputTokens"),
+                "total_tokens": usage.get("totalTokens"),
             },
         )
 
@@ -176,7 +197,7 @@ class BedrockProvider(LLMProvider):
     async def health_check(self) -> bool:
         """
         Lightweight check: list accessible Bedrock foundation models.
-        Uses the cached bedrock (not bedrock-runtime) client — no inference cost.
+        Uses the cached bedrock (not bedrock-runtime) client — zero inference cost.
         Returns True only if the call succeeds without credential/access errors.
         """
         try:
@@ -191,9 +212,16 @@ class BedrockProvider(LLMProvider):
             return False
 
     def get_provider_metadata(self) -> dict[str, Any]:
+        has_creds = bool(
+            self._settings.AWS_ACCESS_KEY_ID
+            or os.environ.get("AWS_ACCESS_KEY_ID")
+        )
         return {
             "provider": "bedrock",
             "region": self._settings.AWS_REGION,
-            "model_id": self._settings.BEDROCK_MODEL_ID,
-            "status": "active",
+            "model_id": self._get_effective_model_id(),
+            "max_tokens": self._settings.BEDROCK_MAX_TOKENS,
+            "temperature": self._settings.BEDROCK_TEMPERATURE,
+            "timeout_seconds": self._settings.BEDROCK_TIMEOUT_SECONDS,
+            "credentials_configured": has_creds,
         }

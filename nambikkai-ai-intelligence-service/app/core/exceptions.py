@@ -16,3 +16,13 @@ class ValidationError(NambikkaiBaseError):
 
 class GatingError(NambikkaiBaseError):
     pass
+
+
+class DataSourceError(NambikkaiBaseError):
+    """Raised when the PostgreSQL data source cannot fulfil a request."""
+    pass
+
+
+class DataSourceConnectionError(DataSourceError):
+    """Raised when the connection pool cannot reach the database."""
+    pass

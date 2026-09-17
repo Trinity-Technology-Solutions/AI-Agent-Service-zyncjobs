@@ -20,3 +20,10 @@ async def ready():
         "provider": settings.AI_PROVIDER,
         "provider_reachable": provider_reachable,
     }
+
+
+@router.get("/email/status")
+async def email_status():
+    from app.services.email_reporter import get_email_status
+    return {"ok": True, "email": get_email_status()}
+

@@ -1,0 +1,9 @@
+{
+  "venvPath": "nambikkai-ai-intelligence-service",
+  "venv": "venv",
+  "extraPaths": [
+    "nambikkai-ai-intelligence-service",
+    "nambikkai-ai-intelligence-service/app",
+    "nambikkai-ai-intelligence-service/venv/Lib/site-packages"
+  ]
+}

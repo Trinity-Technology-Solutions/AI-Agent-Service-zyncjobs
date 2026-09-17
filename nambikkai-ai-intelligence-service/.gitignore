@@ -8,3 +8,15 @@ __pycache__/
 dist/
 build/
 .coverage
+
+# Runtime log files (never commit)
+*.log
+service.log
+service_err.log
+service_run.log
+
+# XGBoost model artifacts (binary/large — not committed)
+models/
+
+# IDE
+.vscode/

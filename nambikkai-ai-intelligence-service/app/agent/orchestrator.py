@@ -7,6 +7,8 @@ from app.domain.models import (
     AnalysisStatus,
     AnalyticsEvent,
     GateClassification,
+    GateResult,
+    EvidencePackage,
     ValidationResult,
 )
 from app.providers.base import LLMProvider
@@ -29,13 +31,33 @@ class AgentOrchestrator:
     def __init__(self, provider: LLMProvider) -> None:
         self._provider = provider
 
-    async def run(self, event: AnalyticsEvent) -> tuple[AnalysisResult, AuditRecord]:
+    async def run(
+        self,
+        event: AnalyticsEvent,
+        gate_result: GateResult | None = None,
+        evidence: EvidencePackage | None = None,
+    ) -> tuple[AnalysisResult, AuditRecord]:
+        """
+        Run the agent pipeline.
+
+        gate_result and evidence may be supplied by the real-data service
+        (which uses evaluate_gate_with_coverage).  When omitted, the
+        orchestrator falls back to evaluate_gate() for backward compatibility.
+        """
         # ── 1. Observe ────────────────────────────────────────────────────
         logger.info("Agent observing event", extra={"event_id": event.event_id})
 
         # ── 2. Evaluate (deterministic gate) ─────────────────────────────
-        gate_result = evaluate_gate(event.metrics)
-        logger.info("Gate result", extra={"classification": gate_result.classification})
+        if gate_result is None:
+            gate_result = evaluate_gate(event.metrics)
+        logger.info(
+            "Gate result",
+            extra={
+                "classification": gate_result.classification,
+                "llm_eligible": gate_result.llm_eligible,
+                "raw_classification": gate_result.raw_classification,
+            },
+        )
 
         # ── 3. Decide ─────────────────────────────────────────────────────
         llm_invoked = False
@@ -64,12 +86,13 @@ class AgentOrchestrator:
             )
             return result, self._make_audit(event, result, llm_invoked)
 
-        # ── 4. Build Evidence ─────────────────────────────────────────────
-        evidence = build_evidence_package(
-            metadata=event.metadata,
-            metrics=event.metrics,
-            gate_result=gate_result,
-        )
+        # ── 4. Build Evidence (if not pre-built by real-data service) ─────
+        if evidence is None:
+            evidence = build_evidence_package(
+                metadata=event.metadata,
+                metrics=event.metrics,
+                gate_result=gate_result,
+            )
 
         # ── 5. Invoke LLM Provider ────────────────────────────────────────
         llm_invoked = True
@@ -126,6 +149,7 @@ class AgentOrchestrator:
             event_id=event.event_id,
             content_id=event.metadata.content_id,
             gate_classification=result.gate_result.classification,
+            raw_classification=result.gate_result.raw_classification,
             analysis_status=result.status,
             provider_used=self._provider.get_provider_metadata()["provider"] if llm_invoked else None,
             validation_passed=result.validation_result.is_valid if result.validation_result else None,

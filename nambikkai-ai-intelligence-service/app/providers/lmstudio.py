@@ -15,6 +15,20 @@ logger = get_logger(__name__)
 
 _SYSTEM_PROMPT = (
     "You are an editorial analytics assistant. "
+    "You receive VERIFIED FACTS computed by a deterministic system from a real database. "
+    "You must NOT recalculate, override, or contradict any supplied metric. "
+    "Distinguish clearly between OBSERVED FACT, INTERPRETATION, and POSSIBLE CONTRIBUTING FACTOR. "
+    "When classification is SURGE_CANDIDATE: the content shows an early growth signal, but "
+    "there is INSUFFICIENT historical coverage to confirm a sustained trend. "
+    "You MUST NOT claim confirmed viral growth, proven sustained surge, or 7-day trend "
+    "when classification is SURGE_CANDIDATE. Use hedged language such as "
+    "'early signal', 'insufficient history to confirm', 'may indicate'. "
+    "When classification is BOOMING_SURGE with sufficient baseline: a sustained surge is supported. "
+    "When classification is LOW_PERFORMING: content view velocity has dropped substantially below baseline across a verified window. "
+    "Identify likely performance bottlenecks based strictly on verified metrics. Provide actionable recommendations for packaging, "
+    "topic/format refresh, description/keyword/hashtag improvements, cross-platform repurposing, and recommended next action. "
+    "For publishing timing: DO NOT invent optimal times. If verified history supports a pattern, state it; "
+    "otherwise explicitly state: 'Insufficient historical evidence to establish publishing timing recommendation.' "
     "Return ONLY a valid JSON object — no markdown, no code fences, no explanation, no trailing text. "
     "The JSON object must contain exactly these keys: "
     "content_intent (string), "
@@ -27,7 +41,9 @@ _SYSTEM_PROMPT = (
     "hashtag_suggestions (array of strings), "
     "cross_platform_ideas (array of strings), "
     "confidence (float between 0.0 and 1.0), "
-    "limitations (array of strings). "
+    "limitations (array of strings, must include baseline coverage limitation when SURGE_CANDIDATE), "
+    "recommended_action (string, clear prioritized next step), "
+    "publishing_timing (string, timing guidance only when data supports it, otherwise stating insufficient evidence). "
     "Use 'possible contributing factor' or 'observed signal' language — never assert causation. "
     "Do not invent metrics. "
     "All string values must use valid JSON escaping. "
@@ -37,21 +53,73 @@ _SYSTEM_PROMPT = (
 
 
 def _build_user_prompt(evidence: EvidencePackage) -> str:
+    classification = evidence.gate_result.classification.value
+    raw = evidence.gate_result.raw_classification
+    cov = evidence.baseline_coverage
+
     lines = [
+        "=== OBSERVED FACTS (verified, do not recalculate) ===",
         f"Content: {evidence.content_metadata.title}",
         f"Platform: {evidence.content_metadata.platform or 'unknown'}",
-        f"Gate: {evidence.gate_result.classification.value}",
+        f"Final classification: {classification}",
+    ]
+    if raw:
+        lines.append(f"Raw classification (before coverage adjustment): {raw.value}")
+    lines += [
         f"Velocity ratio: {evidence.gate_result.velocity_ratio}",
         f"Like acceleration: {evidence.gate_result.like_acceleration}",
-        f"Reason: {evidence.gate_result.reason}",
+        f"Gate reason: {evidence.gate_result.reason}",
+        f"LLM eligible: {evidence.gate_result.llm_eligible}",
         f"Baseline available: {evidence.data_quality.baseline_available}",
     ]
+    if cov:
+        lines += [
+            f"Requested baseline window: {cov.requested_hours:.0f} hours",
+            f"Available history: {cov.available_hours:.1f} hours",
+            f"Baseline sufficient: {cov.sufficient}",
+        ]
+    if evidence.data_quality.notes:
+        lines.append(f"Coverage notes: {evidence.data_quality.notes}")
+
+    if classification == "SURGE_CANDIDATE":
+        lines += [
+            "",
+            "=== INTERPRETATION CONSTRAINT ===",
+            "Classification is SURGE_CANDIDATE: this is an EARLY SIGNAL only.",
+            f"Only {cov.available_hours:.1f}h of history is available versus "
+            f"{cov.requested_hours:.0f}h requested.",
+            "You MUST NOT claim confirmed viral growth or proven sustained trend.",
+            "Use hedged language: 'early signal', 'may indicate', "
+            "'insufficient history to confirm'.",
+            "The limitations field MUST note the insufficient baseline coverage.",
+        ]
+    elif classification == "BOOMING_SURGE":
+        lines += [
+            "",
+            "=== INTERPRETATION CONSTRAINT ===",
+            "Classification is BOOMING_SURGE with sufficient baseline coverage.",
+            "A sustained surge pattern is supported by the available history.",
+            "Still use 'observed signal' and 'possible contributing factor' language.",
+        ]
+    elif classification == "LOW_PERFORMING":
+        cov_h = f"{cov.available_hours:.1f}h" if cov else "established"
+        lines += [
+            "",
+            "=== INTERPRETATION CONSTRAINT ===",
+            "Classification is LOW_PERFORMING: view velocity has stalled below baseline.",
+            f"Verified history span: {cov_h}.",
+            "Identify likely performance bottlenecks based strictly on verified metrics.",
+            "Provide actionable advice on title/packaging refresh, format adjustments, and repurposing.",
+            "In publishing_timing, state explicitly whether available history supports timing or if evidence is insufficient.",
+        ]
+
     if evidence.transcript_excerpt:
         lines.append(f"Excerpt: {evidence.transcript_excerpt}")
     if evidence.regional_signals:
         lines.append(f"Regional: {evidence.regional_signals}")
     lines.append("Return the JSON object now.")
     return "\n".join(lines)
+
 
 
 def _strip_fences(text: str) -> str:

@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, cast
 
 import numpy as np
 import xgboost as xgb
@@ -67,7 +67,7 @@ def prepare_feature_matrix(rows: list[MLDatasetRow]) -> tuple[np.ndarray, np.nda
             row_feats.append(float(r.features[fname]))
 
         X_list.append(row_feats)
-        y_list.append(int(r.target_surge))
+        y_list.append(r.target_surge)
 
     X = np.array(X_list, dtype=np.float32)
     y = np.array(y_list, dtype=np.int32)
@@ -85,7 +85,7 @@ def evaluate_predictions(
     Handles empty splits or single-class distributions gracefully by setting
     metric values to None internally rather than failing.
     """
-    sample_count = int(len(y_true))
+    sample_count = len(y_true)
     if sample_count == 0:
         return {
             "sample_count": 0,
@@ -118,9 +118,9 @@ def evaluate_predictions(
         fn = int(np.sum((y_true == 1) & (y_pred == 0)))
 
     # Metrics calculation with zero-division protection
-    prec: Optional[float] = float(precision_score(y_true, y_pred, zero_division=0)) if (tp + fp) > 0 else None
-    rec: Optional[float] = float(recall_score(y_true, y_pred, zero_division=0)) if pos_count > 0 else None
-    f1: Optional[float] = float(f1_score(y_true, y_pred, zero_division=0)) if (pos_count > 0 and (tp + fp) > 0) else None
+    prec: Optional[float] = float(precision_score(y_true, y_pred, zero_division=cast(Any, 0))) if (tp + fp) > 0 else None
+    rec: Optional[float] = float(recall_score(y_true, y_pred, zero_division=cast(Any, 0))) if pos_count > 0 else None
+    f1: Optional[float] = float(f1_score(y_true, y_pred, zero_division=cast(Any, 0))) if (pos_count > 0 and (tp + fp) > 0) else None
 
     # AUC calculation requires presence of positive class
     pr_auc: Optional[float] = float(average_precision_score(y_true, y_pred_prob)) if pos_count > 0 else None
@@ -284,9 +284,10 @@ def train_track_a_model(
         test_metrics = evaluate_predictions(np.array([], dtype=np.int32), np.array([], dtype=np.float32))
 
     # ── Baseline evaluation ───────────────────────────────────────────────────
-    train_baseline = evaluate_baseline_rule(train_rows, merged_config["surge_threshold"])
-    val_baseline = evaluate_baseline_rule(val_rows, merged_config["surge_threshold"])
-    test_baseline = evaluate_baseline_rule(test_rows, merged_config["surge_threshold"])
+    surge_threshold = float(merged_config["surge_threshold"])
+    train_baseline = evaluate_baseline_rule(train_rows, surge_threshold)
+    val_baseline = evaluate_baseline_rule(val_rows, surge_threshold)
+    test_baseline = evaluate_baseline_rule(test_rows, surge_threshold)
 
     # ── Metadata ──────────────────────────────────────────────────────────────
     metadata = {

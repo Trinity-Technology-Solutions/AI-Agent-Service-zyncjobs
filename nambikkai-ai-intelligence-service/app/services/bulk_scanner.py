@@ -630,7 +630,7 @@ async def scan_platform(
                     (platform,),
                 )
                 row = await cur.fetchone()
-                summary.recommendations_pending_remaining = int(row[0] or 0)
+                summary.recommendations_pending_remaining = int(row[0] or 0) if row else 0
     except Exception as exc:
         logger.warning("[BulkScanner] Could not count remaining pending rows: %s", exc)
 

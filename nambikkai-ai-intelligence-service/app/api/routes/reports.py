@@ -19,7 +19,7 @@ GET /reports/publishing-time?platform=...
 from __future__ import annotations
 
 import logging
-from typing import Literal, Optional
+from typing import Literal, LiteralString, Optional, cast
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -96,7 +96,7 @@ async def get_reports(
                     tbl = _PLATFORM_CFG[p]["history_table"]
                     try:
                         await cur.execute(
-                            f"SELECT MIN(collected_at), MAX(collected_at) FROM {tbl}"
+                            cast(LiteralString, f"SELECT MIN(collected_at), MAX(collected_at) FROM {tbl}")
                         )
                         row = await cur.fetchone()
                         if row and row[0] and row[1]:
@@ -184,8 +184,8 @@ async def get_reports(
                     ORDER BY hb.period_start DESC
                     LIMIT %s
                 """
-                await cur.execute(sql_buckets, [limit])
-                b_cols = [d[0] for d in cur.description]
+                await cur.execute(cast(LiteralString, sql_buckets), [limit])
+                b_cols = [d[0] for d in cur.description] if cur.description else []
                 b_rows = await cur.fetchall()
 
                 buckets_raw = [dict(zip(b_cols, b)) for b in b_rows]
@@ -242,7 +242,9 @@ async def get_reports(
                     p_params.append(platform)
 
                 await cur.execute(
-                    f"""
+                    cast(
+                        LiteralString,
+                        f"""
                     SELECT
                         COUNT(DISTINCT content_id) AS tracked_content,
                         COUNT(*) AS total_actionable,
@@ -251,14 +253,15 @@ async def get_reports(
                     FROM ai_suggestions
                     {p_cond}
                     """,
+                    ),
                     p_params,
                 )
                 sum_row = await cur.fetchone()
                 summary_data = {
-                    "tracked_content": int(sum_row[0] or 0),
-                    "total_actionable": int(sum_row[1] or 0),
-                    "total_surges": int(sum_row[2] or 0),
-                    "total_low_performing": int(sum_row[3] or 0),
+                    "tracked_content": int(sum_row[0] or 0) if sum_row else 0,
+                    "total_actionable": int(sum_row[1] or 0) if sum_row else 0,
+                    "total_surges": int(sum_row[2] or 0) if sum_row else 0,
+                    "total_low_performing": int(sum_row[3] or 0) if sum_row else 0,
                 }
 
                 item_cols = [
@@ -271,25 +274,31 @@ async def get_reports(
                 plat_filter = "AND platform = %s" if platform else ""
 
                 await cur.execute(
-                    f"""
+                    cast(
+                        LiteralString,
+                        f"""
                     SELECT {item_sql_cols}
                     FROM ai_suggestions
                     WHERE is_surge = true {plat_filter}
                     ORDER BY velocity_ratio DESC NULLS LAST
                     LIMIT 15
                     """,
+                    ),
                     [platform] if platform else [],
                 )
                 surge_items = _serialize_items(item_cols, await cur.fetchall())
 
                 await cur.execute(
-                    f"""
+                    cast(
+                        LiteralString,
+                        f"""
                     SELECT {item_sql_cols}
                     FROM ai_suggestions
                     WHERE is_low_performing = true {plat_filter}
                     ORDER BY velocity_ratio ASC NULLS LAST
                     LIMIT 15
                     """,
+                    ),
                     [platform] if platform else [],
                 )
                 low_items = _serialize_items(item_cols, await cur.fetchall())

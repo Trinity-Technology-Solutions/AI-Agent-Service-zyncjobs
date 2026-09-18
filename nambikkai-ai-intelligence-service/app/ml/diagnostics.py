@@ -78,7 +78,7 @@ def inspect_booster_trees(model: xgb.XGBClassifier) -> dict[str, Any]:
                 leaves.append({"depth": depth, "leaf_value": node["leaf"]})
                 max_depth_overall = max(max_depth_overall, depth)
             elif "split" in node:
-                feat_raw = node["split"]
+                feat_raw = str(node["split"])
                 feat_name: str
                 if feat_raw.startswith("f") and feat_raw[1:].isdigit():
                     feat_idx = int(feat_raw[1:])
@@ -141,7 +141,7 @@ def inspect_booster_trees(model: xgb.XGBClassifier) -> dict[str, Any]:
 
 def _feature_stats(values: np.ndarray) -> dict[str, Any]:
     """Compute descriptive stats for a 1-D numpy array without modifying it."""
-    n = int(len(values))
+    n = len(values)
     if n == 0:
         return {
             "count": 0, "unique_count": 0,
@@ -157,7 +157,7 @@ def _feature_stats(values: np.ndarray) -> dict[str, Any]:
     finite = values[~nan_mask & ~inf_mask]
     return {
         "count": n,
-        "unique_count": int(len(np.unique(values))),
+        "unique_count": len(np.unique(values)),
         "min": float(np.min(finite)) if len(finite) > 0 else None,
         "max": float(np.max(finite)) if len(finite) > 0 else None,
         "mean": float(np.mean(finite)) if len(finite) > 0 else None,
@@ -255,15 +255,15 @@ def inspect_prediction_behavior(
 
     unique_probs = np.unique(y_prob)
     prob_range = float(np.max(y_prob) - np.min(y_prob))
-    all_probs_equal = bool(prob_range <= _PROB_EQUALITY_TOLERANCE)
+    all_probs_equal = prob_range <= _PROB_EQUALITY_TOLERANCE
 
     pred_counts: dict[int, int] = {}
     for cls in [0, 1]:
-        pred_counts[int(cls)] = int(np.sum(y_pred == cls))
+        pred_counts[cls] = int(np.sum(y_pred == cls))
 
     return {
         "total_rows": len(rows),
-        "unique_prob_count": int(len(unique_probs)),
+        "unique_prob_count": len(unique_probs),
         "unique_prob_values": [float(v) for v in unique_probs[:10]],  # up to 10 samples
         "prob_stats": _feature_stats(y_prob),
         "all_probs_equal": all_probs_equal,
@@ -323,9 +323,14 @@ def compare_model_metadata(
 
     # Objective
     meta_objective = "binary:logistic"  # assumed from config; not stored explicitly in metadata
+    cfg: Optional[dict[str, Any]] = None
     try:
-        cfg = json.loads(booster.save_config())
-        artifact_objective = cfg["learner"]["objective"]["name"]
+        raw_cfg = json.loads(booster.save_config())
+        if isinstance(raw_cfg, dict):
+            cfg = raw_cfg
+            artifact_objective = cfg["learner"]["objective"]["name"]
+        else:
+            artifact_objective = "unavailable"
     except Exception:
         artifact_objective = "unavailable"
     _check("objective", meta_objective, artifact_objective)
@@ -333,8 +338,11 @@ def compare_model_metadata(
     # scale_pos_weight
     meta_spw = metadata.get("scale_pos_weight", "unavailable")
     try:
-        cfg_spw_str = cfg["learner"]["objective"]["reg_loss_param"]["scale_pos_weight"]
-        artifact_spw = float(cfg_spw_str)
+        if cfg is not None:
+            cfg_spw_str = cfg["learner"]["objective"]["reg_loss_param"]["scale_pos_weight"]
+            artifact_spw = float(cfg_spw_str)
+        else:
+            artifact_spw = "unavailable"
     except Exception:
         artifact_spw = "unavailable"
     _check("scale_pos_weight", meta_spw, artifact_spw, can_verify=(artifact_spw != "unavailable"))
@@ -350,7 +358,10 @@ def compare_model_metadata(
     # Feature count
     meta_feat_count = len(meta_features)
     try:
-        artifact_feat_count = int(cfg["learner"]["learner_model_param"]["num_feature"])
+        if cfg is not None:
+            artifact_feat_count = int(cfg["learner"]["learner_model_param"]["num_feature"])
+        else:
+            artifact_feat_count = "unavailable"
     except Exception:
         artifact_feat_count = "unavailable"
     _check("num_feature", meta_feat_count, artifact_feat_count)
@@ -418,8 +429,8 @@ def diagnose_model_artifact(
             "negative_rows": int(np.sum(y_arr == 0)),
             "positive_rate": float(np.mean(y_arr)),
             "unique_content_count": len(content_row_counts),
-            "rows_per_content_min": int(min(counts_list)),
-            "rows_per_content_max": int(max(counts_list)),
+            "rows_per_content_min": min(counts_list),
+            "rows_per_content_max": max(counts_list),
             "rows_per_content_median": float(np.median(counts_list)),
             "rows_per_content_mean": float(np.mean(counts_list)),
             "note": (

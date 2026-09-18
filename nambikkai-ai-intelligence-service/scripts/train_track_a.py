@@ -18,7 +18,7 @@ from typing import Any
 
 # Windows psycopg event loop compatibility
 if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # pyright: ignore[reportDeprecated]
 
 SERVICE_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SERVICE_ROOT))
@@ -200,7 +200,7 @@ def main() -> None:  # noqa: C901
         tree_obj = json.loads(tree_str)
         def _collect(node):
             if "split" in node:
-                feat_raw = node["split"]
+                feat_raw = str(node["split"])
                 if feat_raw.startswith("f") and feat_raw[1:].isdigit():
                     fname = feature_index_to_name.get(int(feat_raw[1:]), feat_raw)
                 else:

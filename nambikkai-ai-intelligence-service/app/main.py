@@ -15,7 +15,7 @@ from app.core.logging import configure_logging, get_logger
 # On Windows, Python 3.8+ defaults to ProactorEventLoop which is incompatible.
 # This must be set before any event loop is created.
 if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # pyright: ignore[reportDeprecated]
 
 configure_logging()
 logger = get_logger(__name__)

@@ -20,7 +20,7 @@ This module must NOT:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import LiteralString, Optional, cast
 
 import psycopg
 from psycopg_pool import AsyncConnectionPool
@@ -113,7 +113,7 @@ async def _fetch_history(
         ORDER BY collected_at ASC
     """  # table/column names are internal constants, not user input — safe
     async with conn.cursor() as cur:
-        await cur.execute(sql, (content_id,))
+        await cur.execute(cast(LiteralString, sql), (content_id,))
         rows = await cur.fetchall()
 
     return [
@@ -277,7 +277,7 @@ async def _fetch_account_key_from_history(platform: str, content_id: str) -> str
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    f"SELECT {account_col} FROM {table} WHERE {id_col} = %s LIMIT 1",
+                    cast(LiteralString, f"SELECT {account_col} FROM {table} WHERE {id_col} = %s LIMIT 1"),
                     (content_id,),
                 )
                 row = await cur.fetchone()
@@ -301,7 +301,7 @@ async def fetch_all_content_ids(platform: str) -> list[str]:
     try:
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
-                await cur.execute(f"SELECT DISTINCT {id_col} FROM {table}")
+                await cur.execute(cast(LiteralString, f"SELECT DISTINCT {id_col} FROM {table}"))
                 rows = await cur.fetchall()
         return [row[0] for row in rows]
     except Exception as exc:

@@ -12,7 +12,7 @@ POST /scan runs the scanner synchronously and returns the summary.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import LiteralString, Optional, cast
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -149,7 +149,7 @@ async def _query_suggestions(
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             # Execute counts
-            await cur.execute(counts_sql, base_params)
+            await cur.execute(cast(LiteralString, counts_sql), base_params)
             count_rows = await cur.fetchall()
             counts_map = {cls: 0 for cls in ACTIONABLE_CLASSIFICATIONS}
             for cls_name, c in count_rows:
@@ -163,8 +163,8 @@ async def _query_suggestions(
 
             # Execute items query
             item_params_with_pagination = item_params + [limit, offset]
-            await cur.execute(items_sql, item_params_with_pagination)
-            cols = [d[0] for d in cur.description]
+            await cur.execute(cast(LiteralString, items_sql), item_params_with_pagination)
+            cols = [d[0] for d in cur.description] if cur.description else []
             rows = await cur.fetchall()
 
     from app.ml.readiness import get_cached_readiness
@@ -224,11 +224,11 @@ async def get_notifications(limit: int = Query(20, ge=1, le=100)):
         """
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
-                await cur.execute(sql, {
+                await cur.execute(cast(LiteralString, sql), {
                     "classes": list(_NOTIFICATION_CLASSIFICATIONS),
                     "limit": limit,
                 })
-                cols = [d[0] for d in cur.description]
+                cols = [d[0] for d in cur.description] if cur.description else []
                 rows = await cur.fetchall()
 
         notifications = []
@@ -290,7 +290,7 @@ async def get_suggestion_by_content(content_id: str):
                 row = await cur.fetchone()
                 if not row:
                     raise HTTPException(status_code=404, detail="Suggestion not found.")
-                cols = [d[0] for d in cur.description]
+                cols = [d[0] for d in cur.description] if cur.description else []
                 d = dict(zip(cols, row))
                 from app.ml.readiness import get_cached_readiness
                 d["xgboost_status"] = get_cached_readiness(d.get("platform"))
@@ -328,7 +328,7 @@ async def get_suggestion(platform: str, content_id: str):
                 row = await cur.fetchone()
                 if not row:
                     raise HTTPException(status_code=404, detail="Suggestion not found.")
-                cols = [d[0] for d in cur.description]
+                cols = [d[0] for d in cur.description] if cur.description else []
                 d = dict(zip(cols, row))
                 from app.ml.readiness import get_cached_readiness
                 d["xgboost_status"] = get_cached_readiness(platform)

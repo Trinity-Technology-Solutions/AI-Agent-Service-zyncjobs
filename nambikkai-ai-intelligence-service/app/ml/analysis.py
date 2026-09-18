@@ -42,12 +42,13 @@ def analyze_feature_importance(model: xgb.XGBClassifier) -> list[dict[str, Any]]
     if score_dict:
         # Score keys can be feature names ("velocity_ratio") or position strings ("f0", "f1")
         for k, val in score_dict.items():
+            score = float(val[0] if isinstance(val, list) else val)
             if k in FEATURE_NAMES:
-                raw_scores[k] = float(val)
+                raw_scores[k] = score
             elif k.startswith("f") and k[1:].isdigit():
                 idx = int(k[1:])
                 if 0 <= idx < len(FEATURE_NAMES):
-                    raw_scores[FEATURE_NAMES[idx]] = float(val)
+                    raw_scores[FEATURE_NAMES[idx]] = score
     elif hasattr(model, "feature_importances_") and model.feature_importances_ is not None:
         for idx, val in enumerate(model.feature_importances_):
             if idx < len(FEATURE_NAMES):
@@ -80,7 +81,7 @@ def _compute_stats(arr: np.ndarray) -> dict[str, Optional[float]]:
         }
 
     return {
-        "count": int(len(arr)),
+        "count": len(arr),
         "min": float(np.min(arr)),
         "max": float(np.max(arr)),
         "mean": float(np.mean(arr)),

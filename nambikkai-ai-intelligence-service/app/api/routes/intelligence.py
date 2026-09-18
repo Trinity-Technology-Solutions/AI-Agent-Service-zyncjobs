@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
+from typing import LiteralString, Optional, cast
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -80,7 +80,9 @@ async def get_performance_intelligence(
 
                 # 1. Deduplicated daily series — one row per (platform, content_id, day)
                 await cur.execute(
-                    f"""
+                    cast(
+                        LiteralString,
+                        f"""
                     WITH deduped AS (
                         SELECT
                             platform,
@@ -124,14 +126,17 @@ async def get_performance_intelligence(
                         GROUP BY d
                     ) lp_counts ON lp_counts.d = daily.obs_day
                     ORDER BY daily.obs_day
-                    """
+                    """,
+                    )
                 )
                 daily_rows = await cur.fetchall()
-                daily_cols = [d[0] for d in cur.description]
+                daily_cols = [d[0] for d in cur.description] if cur.description else []
 
                 # 2. Platform breakdown
                 await cur.execute(
-                    f"""
+                    cast(
+                        LiteralString,
+                        f"""
                     WITH deduped AS (
                         SELECT
                             platform,
@@ -150,16 +155,19 @@ async def get_performance_intelligence(
                     FROM deduped
                     GROUP BY platform
                     ORDER BY total_primary_metric DESC
-                    """
+                    """,
+                    )
                 )
                 platform_rows = await cur.fetchall()
-                platform_cols = [d[0] for d in cur.description]
+                platform_cols = [d[0] for d in cur.description] if cur.description else []
 
                 # 3. Top performers from ai_suggestions (verified classifications)
                 platform_filter = "AND platform = ANY(%s)" if platform else ""
                 platform_filter_param = [platforms] if platform else []
                 await cur.execute(
-                    f"""
+                    cast(
+                        LiteralString,
+                        f"""
                     WITH latest AS (
                         SELECT DISTINCT ON (platform, content_id)
                             platform, content_id, title, classification,
@@ -174,14 +182,17 @@ async def get_performance_intelligence(
                     ORDER BY velocity_ratio DESC NULLS LAST, current_metric DESC NULLS LAST
                     LIMIT 5
                     """,
+                    ),
                     platform_filter_param if platform else [],
                 )
                 top_rows = await cur.fetchall()
-                top_cols = [d[0] for d in cur.description]
+                top_cols = [d[0] for d in cur.description] if cur.description else []
 
                 # 4. Coverage metadata
                 await cur.execute(
-                    f"""
+                    cast(
+                        LiteralString,
+                        f"""
                     SELECT
                         COUNT(DISTINCT DATE_TRUNC('day', collected_at)) AS observed_days,
                         MIN(collected_at) AS first_observation,
@@ -189,7 +200,8 @@ async def get_performance_intelligence(
                         COUNT(*) AS total_observations
                     FROM ({union}) h
                     WHERE collected_at >= NOW() - INTERVAL '{days} days'
-                    """
+                    """,
+                    )
                 )
                 cov_row = await cur.fetchone()
 
@@ -291,7 +303,9 @@ async def get_publishing_intelligence(
 
                     # Deduplicate per content+hour to avoid duplication from re-ingestion
                     await cur.execute(
-                        f"""
+                        cast(
+                            LiteralString,
+                            f"""
                         WITH deduped AS (
                             SELECT
                                 {id_col}::text AS content_id,
@@ -322,13 +336,16 @@ async def get_publishing_intelligence(
                             ROUND((b.avg_metric / NULLIF(o.grand_avg, 0) - 1) * 100, 1) AS pct_above_avg
                         FROM by_hour b, overall_avg o
                         ORDER BY b.avg_metric DESC
-                        """
+                        """,
+                        )
                     )
                     hour_rows = await cur.fetchall()
-                    hour_cols = [d[0] for d in cur.description]
+                    hour_cols = [d[0] for d in cur.description] if cur.description else []
 
                     await cur.execute(
-                        f"""
+                        cast(
+                            LiteralString,
+                            f"""
                         WITH deduped AS (
                             SELECT
                                 {id_col}::text AS content_id,
@@ -359,16 +376,21 @@ async def get_publishing_intelligence(
                             ROUND((b.avg_metric / NULLIF(o.grand_avg, 0) - 1) * 100, 1) AS pct_above_avg
                         FROM by_day b, overall_avg o
                         ORDER BY b.avg_metric DESC
-                        """
+                        """,
+                        )
                     )
                     day_rows = await cur.fetchall()
-                    day_cols = [d[0] for d in cur.description]
+                    day_cols = [d[0] for d in cur.description] if cur.description else []
 
                     # Count total observations for this platform
                     await cur.execute(
-                        f"SELECT COUNT(*) FROM {table} WHERE collected_at >= NOW() - INTERVAL '90 days'"
+                        cast(
+                            LiteralString,
+                            f"SELECT COUNT(*) FROM {table} WHERE collected_at >= NOW() - INTERVAL '90 days'",
+                        )
                     )
-                    total_obs = (await cur.fetchone())[0] or 0
+                    obs_row = await cur.fetchone()
+                    total_obs = (obs_row[0] if obs_row else 0) or 0
 
                     sufficient = int(total_obs) >= min_observations
 
@@ -590,8 +612,8 @@ async def intelligence_chat(body: ChatRequest):
 
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
-                await cur.execute(sql, params)
-                cols = [d[0] for d in cur.description]
+                await cur.execute(cast(LiteralString, sql), params)
+                cols = [d[0] for d in cur.description] if cur.description else []
                 rows = [dict(zip(cols, row)) for row in await cur.fetchall()]
 
         # Serialize datetime fields

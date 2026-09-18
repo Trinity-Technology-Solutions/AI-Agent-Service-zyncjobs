@@ -82,12 +82,16 @@ def _build_user_prompt(evidence: EvidencePackage) -> str:
         lines.append(f"Coverage notes: {evidence.data_quality.notes}")
 
     if classification == "SURGE_CANDIDATE":
+        cov_text = (
+            f"Only {cov.available_hours:.1f}h of history is available versus {cov.requested_hours:.0f}h requested."
+            if cov
+            else "Limited baseline history is available."
+        )
         lines += [
             "",
             "=== INTERPRETATION CONSTRAINT ===",
             "Classification is SURGE_CANDIDATE: this is an EARLY SIGNAL only.",
-            f"Only {cov.available_hours:.1f}h of history is available versus "
-            f"{cov.requested_hours:.0f}h requested.",
+            cov_text,
             "You MUST NOT claim confirmed viral growth or proven sustained trend.",
             "Use hedged language: 'early signal', 'may indicate', "
             "'insufficient history to confirm'.",

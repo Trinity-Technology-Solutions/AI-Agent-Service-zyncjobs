@@ -21,7 +21,16 @@ from app.domain.models import GateClassification
 
 logger = logging.getLogger(__name__)
 
+import asyncio as _asyncio
+
 router = APIRouter(prefix="/suggestions", tags=["suggestions"])
+
+# ── Concurrent scan guard ──────────────────────────────────────────────────
+# Prevents two simultaneous bulk scans from running at the same time.
+# asyncio.Lock is per-process (not distributed), which is sufficient for a
+# single-worker deployment. A second caller gets an immediate 409 rather than
+# waiting — scans are long-running and callers should poll for completion.
+_SCAN_LOCK = _asyncio.Lock()
 
 
 def _normalize_structured_analysis(value):  # noqa: ANN001
@@ -353,65 +362,75 @@ async def trigger_scan(
     Trigger a synchronous bulk scan.
 
     Returns the scan summaries for each platform scanned.
+    If a scan is already in progress, returns a structured error immediately
+    rather than queuing a second concurrent scan.
     """
+    if _SCAN_LOCK.locked():
+        return {
+            "ok": False,
+            "error": "A scan is already in progress. Please wait for it to complete before triggering another.",
+            "error_type": "scan_in_progress",
+        }
+
     from app.services.bulk_scanner import scan_all_platforms, scan_platform
     from app.services.email_reporter import send_scan_report
 
-    try:
-        if platforms:
-            target_list = [p.strip().lower() for p in platforms.split(",") if p.strip()]
-            summaries = []
-            for p in target_list:
-                s = await scan_platform(
-                    p,
+    async with _SCAN_LOCK:
+        try:
+            if platforms:
+                target_list = [p.strip().lower() for p in platforms.split(",") if p.strip()]
+                summaries = []
+                for p in target_list:
+                    s = await scan_platform(
+                        p,
+                        content_id=content_id,
+                        max_items=max_items,
+                        max_new_recommendations=batch_size,
+                        force_refresh=force_refresh,
+                    )
+                    summaries.append(s)
+            else:
+                summaries = await scan_all_platforms(
                     content_id=content_id,
                     max_items=max_items,
                     max_new_recommendations=batch_size,
                     force_refresh=force_refresh,
                 )
-                summaries.append(s)
-        else:
-            summaries = await scan_all_platforms(
-                content_id=content_id,
-                max_items=max_items,
-                max_new_recommendations=batch_size,
-                force_refresh=force_refresh,
-            )
 
-        summary_dicts = [
-            {
-                "platform": s.platform,
-                "total_content_ids": s.total_content_ids,
-                "scanned": s.scanned,
-                "actionable": s.actionable,
-                "skipped_insufficient": s.skipped_insufficient,
-                "errors": s.errors,
-                "suggestions_updated": s.suggestions_updated,
-                "recommendations_attempted": s.recommendations_attempted,
-                "recommendations_generated": s.recommendations_generated,
-                "recommendations_cached": s.recommendations_cached,
-                "recommendations_pending": s.recommendations_pending,
-                "recommendations_pending_remaining": s.recommendations_pending_remaining,
-                "recommendations_unavailable": s.recommendations_unavailable,
-                "recommendations_failed_validation": s.recommendations_failed_validation,
-                "recommendations_not_eligible": s.recommendations_not_eligible,
-                "llm_provider": s.llm_provider,
-                "xgboost_status": s.xgboost_status,
-                "started_at": s.started_at.isoformat(),
-                "finished_at": s.finished_at.isoformat() if s.finished_at else None,
+            summary_dicts = [
+                {
+                    "platform": s.platform,
+                    "total_content_ids": s.total_content_ids,
+                    "scanned": s.scanned,
+                    "actionable": s.actionable,
+                    "skipped_insufficient": s.skipped_insufficient,
+                    "errors": s.errors,
+                    "suggestions_updated": s.suggestions_updated,
+                    "recommendations_attempted": s.recommendations_attempted,
+                    "recommendations_generated": s.recommendations_generated,
+                    "recommendations_cached": s.recommendations_cached,
+                    "recommendations_pending": s.recommendations_pending,
+                    "recommendations_pending_remaining": s.recommendations_pending_remaining,
+                    "recommendations_unavailable": s.recommendations_unavailable,
+                    "recommendations_failed_validation": s.recommendations_failed_validation,
+                    "recommendations_not_eligible": s.recommendations_not_eligible,
+                    "llm_provider": s.llm_provider,
+                    "xgboost_status": s.xgboost_status,
+                    "started_at": s.started_at.isoformat(),
+                    "finished_at": s.finished_at.isoformat() if s.finished_at else None,
+                }
+                for s in summaries
+            ]
+
+            # Send optional email report if configured
+            send_scan_report(summary_dicts)
+
+            return {
+                "ok": True,
+                "message": f"Scan completed across {len(summaries)} platform(s).",
+                "summaries": summary_dicts,
             }
-            for s in summaries
-        ]
-
-        # Send optional email report if configured
-        send_scan_report(summary_dicts)
-
-        return {
-            "ok": True,
-            "message": f"Scan completed across {len(summaries)} platform(s).",
-            "summaries": summary_dicts,
-        }
-    except Exception as exc:
-        logger.error("[/suggestions/scan] Error: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Scan failed: {exc}")
+        except Exception as exc:
+            logger.error("[/suggestions/scan] Error: %s", exc)
+            raise HTTPException(status_code=500, detail=f"Scan failed: {exc}")
 

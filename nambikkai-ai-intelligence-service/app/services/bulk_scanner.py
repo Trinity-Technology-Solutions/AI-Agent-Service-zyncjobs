@@ -16,6 +16,7 @@ This module MUST NOT:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -40,7 +41,7 @@ from app.ml.readiness import (
     get_cached_readiness,
     set_cached_readiness,
 )
-from app.providers import get_provider
+from app.providers import get_provider, get_provider_with_fallback
 from app.services.evidence_builder import build_evidence_package
 from app.services.gating import evaluate_gate_with_coverage
 from app.services.metrics_from_history import (
@@ -49,6 +50,7 @@ from app.services.metrics_from_history import (
 )
 from app.validation.output_validator import validate_output
 from app.validation.policy_validator import validate_policy
+from app.ml.xgboost_service import predict_from_record as _xgb_predict
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +76,8 @@ INSERT INTO ai_suggestions (
     evidence_reason, ai_recommendation,
     structured_analysis, llm_status,
     report_period, coverage_hours, analyzed_at,
-    is_low_performing, is_surge
+    is_low_performing, is_surge,
+    xgboost_surge_probability, xgboost_predicted_surge
 ) VALUES (
     %(platform)s, %(content_id)s, %(account_key)s,
     %(title)s, %(classification)s, %(velocity_ratio)s, %(like_acceleration)s,
@@ -82,7 +85,8 @@ INSERT INTO ai_suggestions (
     %(evidence_reason)s, %(ai_recommendation)s,
     %(structured_analysis)s, %(llm_status)s,
     %(report_period)s, %(coverage_hours)s, NOW(),
-    %(is_low_performing)s, %(is_surge)s
+    %(is_low_performing)s, %(is_surge)s,
+    %(xgboost_surge_probability)s, %(xgboost_predicted_surge)s
 )
 ON CONFLICT (platform, content_id, report_period) DO UPDATE SET
     account_key = EXCLUDED.account_key,
@@ -99,6 +103,8 @@ ON CONFLICT (platform, content_id, report_period) DO UPDATE SET
     coverage_hours = EXCLUDED.coverage_hours,
     is_low_performing = EXCLUDED.is_low_performing,
     is_surge = EXCLUDED.is_surge,
+    xgboost_surge_probability = EXCLUDED.xgboost_surge_probability,
+    xgboost_predicted_surge = EXCLUDED.xgboost_predicted_surge,
     analyzed_at = NOW();
 """
 
@@ -166,6 +172,9 @@ async def evaluate_platform_readiness(platform: str) -> str:
         if sample_records:
             readiness = check_xgboost_readiness(sample_records)
             set_cached_readiness(platform, readiness)
+            # Keep xgboost_service data_prerequisites_met in sync
+            from app.ml.xgboost_service import update_data_prerequisites_met
+            update_data_prerequisites_met(readiness.data_prerequisites_met)
             return readiness.status
     except Exception as exc:
         logger.warning("[BulkScanner] Could not evaluate readiness for %s: %s", platform, exc)
@@ -312,11 +321,19 @@ async def scan_platform(
     except Exception as exc:
         logger.warning("[BulkScanner] Could not load existing recommendations: %s", exc)
 
-    # Initialize LLM provider once for the scan
+    # Initialize LLM provider (primary + optional fallback) once for the scan
     provider = None
+    fallback_provider = None
     try:
-        provider = get_provider()
-        summary.llm_provider = provider.get_provider_metadata().get("provider", "unknown")
+        provider, fallback_provider = get_provider_with_fallback()
+        primary_meta = provider.get_provider_metadata()
+        summary.llm_provider = primary_meta.get("provider", "unknown")
+        if fallback_provider:
+            fb_meta = fallback_provider.get_provider_metadata()
+            logger.info(
+                "[BulkScanner] %s LLM primary=%s fallback=%s",
+                platform, summary.llm_provider, fb_meta.get("provider", "unknown"),
+            )
     except Exception as p_err:
         logger.warning("[BulkScanner] Could not initialize LLM provider: %s", p_err)
         summary.llm_provider = "unavailable"
@@ -502,16 +519,27 @@ async def scan_platform(
     llm_candidates = list(llm_candidates_map.values())
     llm_candidates.sort(key=_candidate_priority, reverse=True)
 
+    # ── 5. Stage 3: Bounded-Concurrent LLM Processing ──────────────────────
+    # All eligible items are processed in this scan cycle — no cap on total items.
+    # Concurrency is bounded by LLM_CONCURRENCY (default 3) to avoid saturating
+    # the provider. Each task is independent; failures do not abort sibling tasks.
+    from app.core.config import get_settings as _get_settings
+    _concurrency = _get_settings().LLM_CONCURRENCY
+    semaphore = asyncio.Semaphore(max(1, _concurrency))
 
-    # ── 5. Stage 3: Unbounded LLM Processing (all eligible items in one pass) ─
-    for cand in llm_candidates:
+    async def _process_one(cand: dict) -> tuple[str, dict]:
+        """Process a single LLM candidate under the semaphore. Returns (target_id, base_row)."""
         target_id = cand["target_id"]
         base_row = cand["base_row"]
 
-        if provider is not None:
-            summary.recommendations_attempted += 1
+        if provider is None:
+            base_row["ai_recommendation"] = "Recommendation unavailable"
+            base_row["structured_analysis"] = None
+            base_row["llm_status"] = "unavailable"
+            return target_id, base_row
+
+        async with semaphore:
             try:
-                # If record/metrics not precomputed, fetch now
                 record = cand["record"]
                 metrics = cand["metrics"]
                 coverage = cand["coverage"]
@@ -519,11 +547,15 @@ async def scan_platform(
 
                 if record is None:
                     record = await fetch_normalized_record(platform, target_id, hours=720)
-                    metrics, coverage = metrics_and_coverage_from_history(record, requested_baseline_hours=DEFAULT_BASELINE_HOURS)
+                    metrics, coverage = metrics_and_coverage_from_history(
+                        record, requested_baseline_hours=DEFAULT_BASELINE_HOURS
+                    )
                     gate = evaluate_gate_with_coverage(metrics, coverage)
 
-                # Ensure gate reflects the stored classification if candidate was queued
-                if cand["vr_val"] is not None and (gate.velocity_ratio is None or gate.velocity_ratio < 1.0):
+                # Ensure gate reflects the stored classification if candidate was queued from DB
+                if cand["vr_val"] is not None and (
+                    gate.velocity_ratio is None or gate.velocity_ratio < 1.0
+                ):
                     gate = GateResult(
                         classification=GateClassification(base_row["classification"]),
                         velocity_ratio=cand["vr_val"],
@@ -545,7 +577,48 @@ async def scan_platform(
                     gate_result=gate,
                     coverage=coverage,
                 )
-                analysis = await provider.generate_structured_analysis(evidence)
+
+                # ── Try primary provider, fall back if unavailable ──────────
+                analysis = None
+                provider_used = provider
+                fallback_used = False
+                primary_failure_reason: Optional[str] = None
+
+                try:
+                    analysis = await provider.generate_structured_analysis(evidence)
+                except ProviderUnavailableError as primary_exc:
+                    primary_failure_reason = str(primary_exc)
+                    if fallback_provider is not None:
+                        logger.warning(
+                            "[BulkScanner] Primary provider unavailable for %s/%s: %s. "
+                            "Trying fallback provider.",
+                            platform, target_id, primary_exc,
+                        )
+                        try:
+                            analysis = await fallback_provider.generate_structured_analysis(evidence)
+                            provider_used = fallback_provider
+                            fallback_used = True
+                        except (ProviderUnavailableError, ProviderError, Exception) as fb_exc:
+                            logger.warning(
+                                "[BulkScanner] Fallback provider also failed for %s/%s: %s",
+                                platform, target_id, fb_exc,
+                            )
+                    else:
+                        raise  # no fallback — propagate to outer except
+
+                if analysis is None:
+                    base_row["ai_recommendation"] = "Recommendation unavailable"
+                    base_row["structured_analysis"] = None
+                    base_row["llm_status"] = "unavailable"
+                    return target_id, base_row
+
+                if fallback_used:
+                    fb_name = provider_used.get_provider_metadata().get("provider", "fallback")
+                    logger.info(
+                        "[BulkScanner] Fallback provider %s served %s/%s",
+                        fb_name, platform, target_id,
+                    )
+
                 out_val = validate_output(analysis, evidence)
                 pol_val = validate_policy(analysis)
 
@@ -560,14 +633,17 @@ async def scan_platform(
                     if analysis.writer_recommendations:
                         rec_lines.append("• " + "\n• ".join(analysis.writer_recommendations[:2]))
                     if analysis.title_suggestions:
-                        rec_lines.append("Suggested angles: " + ", ".join(f'"{t}"' for t in analysis.title_suggestions[:2]))
+                        rec_lines.append(
+                            "Suggested angles: "
+                            + ", ".join(f'"{t}"' for t in analysis.title_suggestions[:2])
+                        )
                     if analysis.publishing_timing:
                         rec_lines.append(f"Timing: {analysis.publishing_timing}")
-                    ai_rec = "\n\n".join(rec_lines) if rec_lines else "Editorial recommendations generated."
+                    ai_rec = (
+                        "\n\n".join(rec_lines) if rec_lines else "Editorial recommendations generated."
+                    )
                     base_row["ai_recommendation"] = ai_rec
-
-
-                    summary.recommendations_generated += 1
+                    # Update in-memory generated cache so sibling tasks can see it
                     existing_generated[target_id] = {
                         "ai_recommendation": ai_rec,
                         "structured_analysis": structured_analysis_dict,
@@ -575,29 +651,43 @@ async def scan_platform(
                 else:
                     logger.warning(
                         "[BulkScanner] LLM output validation failed for %s/%s: %s %s",
-                        platform, target_id, out_val.failures, pol_val.failures,
+                        platform,
+                        target_id,
+                        out_val.failures,
+                        pol_val.failures,
                     )
                     base_row["ai_recommendation"] = "Recommendation unavailable (validation failed)"
                     base_row["structured_analysis"] = None
                     base_row["llm_status"] = "failed_validation"
-                    summary.recommendations_failed_validation += 1
+
             except (ProviderUnavailableError, ProviderError, Exception) as exc:
                 logger.warning(
                     "[BulkScanner] LLM generation failed for %s/%s: %s",
-                    platform, target_id, exc,
+                    platform,
+                    target_id,
+                    exc,
                 )
                 base_row["ai_recommendation"] = "Recommendation unavailable"
                 base_row["structured_analysis"] = None
                 base_row["llm_status"] = "unavailable"
-                summary.recommendations_unavailable += 1
-        else:
-            # Provider unavailable — mark as unavailable (not pending)
-            base_row["ai_recommendation"] = "Recommendation unavailable"
-            base_row["structured_analysis"] = None
-            base_row["llm_status"] = "unavailable"
-            summary.recommendations_unavailable += 1
 
-        rows_to_upsert[target_id] = base_row
+        return target_id, base_row
+
+    # Fire all tasks and collect results; semaphore limits true concurrency
+    llm_tasks = [_process_one(c) for c in llm_candidates]
+    llm_results = await asyncio.gather(*llm_tasks, return_exceptions=False)
+
+    # Tally counters and collect rows
+    for tid, brow in llm_results:
+        status = brow.get("llm_status")
+        summary.recommendations_attempted += 1
+        if status == "generated":
+            summary.recommendations_generated += 1
+        elif status == "failed_validation":
+            summary.recommendations_failed_validation += 1
+        else:
+            summary.recommendations_unavailable += 1
+        rows_to_upsert[tid] = brow
 
     # ── 6. Stage 4: Persist All Suggestions in Transaction ─────────────────
     try:
@@ -635,15 +725,29 @@ async def scan_platform(
         logger.warning("[BulkScanner] Could not count remaining pending rows: %s", exc)
 
     summary.finish()
+    _duration_s = (
+        (summary.finished_at - summary.started_at).total_seconds()
+        if summary.finished_at
+        else 0.0
+    )
     logger.info(
-        "[BulkScanner] %s scan complete: %d scanned, %d actionable, %d updated, "
-        "%d cached, %d new LLM, %d unavailable, %d failed_validation, %d not_eligible, %d errors. "
-        "Pending remaining in DB: %d (should be 0).",
-        platform, summary.scanned, summary.actionable, summary.suggestions_updated,
-        summary.recommendations_cached, summary.recommendations_generated,
-        summary.recommendations_unavailable, summary.recommendations_failed_validation,
-        summary.recommendations_not_eligible, summary.errors,
+        "[BulkScanner] %s scan complete: duration=%.1fs scanned=%d actionable=%d updated=%d "
+        "cached=%d generated=%d unavailable=%d failed_validation=%d not_eligible=%d errors=%d "
+        "pending_remaining=%d concurrency=%d provider=%s",
+        platform,
+        _duration_s,
+        summary.scanned,
+        summary.actionable,
+        summary.suggestions_updated,
+        summary.recommendations_cached,
+        summary.recommendations_generated,
+        summary.recommendations_unavailable,
+        summary.recommendations_failed_validation,
+        summary.recommendations_not_eligible,
+        summary.errors,
         summary.recommendations_pending_remaining,
+        _concurrency,
+        summary.llm_provider,
     )
     return summary
 

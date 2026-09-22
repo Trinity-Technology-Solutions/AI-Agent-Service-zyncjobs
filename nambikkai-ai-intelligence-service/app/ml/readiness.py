@@ -271,36 +271,27 @@ def get_xgboost_status_detail(platform: Optional[str] = None) -> dict:
     """
     Return the full 4-state XGBoost status for use in API responses.
 
-    Always returns all four states so callers never claim more than is true.
-    Never returns 'READY' as meaning 'model is predicting' — that would be false.
+    Merges live data-readiness state (from check_xgboost_readiness) with the
+    model loading/prediction state held by xgboost_service.  This ensures that
+    data_prerequisites_met, model_trained, model_loaded, and prediction_available
+    are never conflated with each other.
     """
+    from app.ml.xgboost_service import get_xgboost_api_status
+    api_status = get_xgboost_api_status()
+
+    # Overlay live data-readiness state from the cached report
     report = get_readiness_report(platform)
-    if report is None:
-        return {
-            "status": "WAITING_FOR_DATA",
-            "data_prerequisites_met": False,
-            "model_trained": False,
-            "model_loaded": False,
-            "prediction_available": False,
-            "reason": "Readiness not yet evaluated for this platform.",
-            "note": (
-                "Deterministic classification (velocity ratio, like acceleration) "
-                "is the sole authoritative classification mechanism. "
-                "XGBoost predictions are NOT currently active."
-            ),
-        }
-    return {
-        "status": report.status,
-        "data_prerequisites_met": report.data_prerequisites_met,
-        "model_trained": report.model_trained,
-        "model_loaded": report.model_loaded,
-        "prediction_available": report.prediction_available,
-        "reason": report.reason,
-        "details": report.details,
-        "note": (
-            "Deterministic classification (velocity ratio, like acceleration) "
-            "is the sole authoritative classification mechanism. "
-            "XGBoost predictions are NOT currently active."
-        ),
-    }
+    if report is not None:
+        api_status["data_prerequisites_met"] = report.data_prerequisites_met
+        api_status["status"] = report.status
+        if report.details:
+            api_status["details"] = report.details
+        if not report.data_prerequisites_met:
+            api_status["data_reason"] = report.reason
+    else:
+        api_status["data_prerequisites_met"] = False
+        api_status["status"] = "WAITING_FOR_DATA"
+        api_status["data_reason"] = "Readiness not yet evaluated for this platform."
+
+    return api_status
 

@@ -22,6 +22,25 @@ async def ready():
     }
 
 
+@router.get("/xgboost-status")
+async def xgboost_status():
+    """
+    Return the complete real-time XGBoost pipeline status.
+
+    This is the single authoritative source of truth for:
+    - data_prerequisites_met (from live DB readiness check)
+    - model_trained (artifact exists on disk)
+    - model_loaded (artifact parsed and in memory)
+    - prediction_available (loaded AND passed quality gates)
+    - qualification_status and metrics
+
+    The dashboard must consume this endpoint — never hardcode these states.
+    """
+    from app.ml.readiness import get_xgboost_status_detail
+    status = get_xgboost_status_detail()
+    return {"ok": True, "xgboost": status}
+
+
 @router.get("/email/status")
 async def email_status():
     from app.services.email_reporter import get_email_status

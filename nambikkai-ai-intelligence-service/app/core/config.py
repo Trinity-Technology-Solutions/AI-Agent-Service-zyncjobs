@@ -68,8 +68,49 @@ class Settings(BaseSettings):
     # failed_validation, or cached — never left as pending.
     LLM_BATCH_SIZE: int = 1000
 
+    # -- Bounded LLM concurrency --
+    # Number of concurrent LLM requests per scan cycle.
+    # Tune separately for development (LM Studio, low concurrency) and production
+    # (Bedrock, higher concurrency). Setting too high causes provider saturation.
+    # Default 3 is safe for LM Studio; production Bedrock can handle higher values.
+    LLM_CONCURRENCY: int = 3
+
+    # -- LLM provider fallback --
+    # Optional fallback provider to use when the primary provider is unavailable.
+    # Leave blank (default) to disable fallback entirely.
+    # Example: if AI_PROVIDER=bedrock fails, set LLM_FALLBACK_PROVIDER=lmstudio
+    # WARNING: do NOT set fallback from production Bedrock to a local LM Studio
+    # that is not reachable from the production server.
+    LLM_FALLBACK_PROVIDER: str = ""
+
     # -- Bulk scan scheduler --
     AI_SCAN_INTERVAL_SECONDS: int = 3600
+
+    # -- XGBoost model artifact --
+    # Path to the directory containing xgboost_model.json and metadata.json.
+    # Empty string means XGBoost loading is disabled (safe default).
+    # Set to "models/track_a_xgboost" (or an absolute path) to enable.
+    XGBOOST_MODEL_PATH: str = ""
+
+    # -- XGBoost prediction quality gates --
+    # Due to extreme class imbalance (surge events are rare, ~0.9% positive rate),
+    # F1 alone is not a meaningful qualification gate. ROC-AUC is the primary gate
+    # because it measures the model's discriminative ability independently of threshold.
+    # A model with AUC >= 0.70 and recall >= 0.30 on the test set is genuinely useful
+    # as an additional probabilistic signal alongside deterministic classification.
+    #
+    # XGBOOST_MIN_TEST_ROC_AUC: primary gate — model must beat random (0.5) by a wide margin
+    # XGBOOST_MIN_TEST_RECALL:  secondary gate — model must catch a meaningful fraction of surges
+    # XGBOOST_MIN_TEST_F1:      kept for backward compatibility; set low to reflect imbalance reality
+    XGBOOST_MIN_TEST_F1: float = 0.03       # F1 >= 0.03 at 0.9% positive rate is meaningful
+    XGBOOST_MIN_TEST_ROC_AUC: float = 0.70  # Primary gate: AUC must beat naive baseline clearly
+    XGBOOST_MIN_TEST_RECALL: float = 0.30   # Must catch at least 30% of actual surges
+
+    # -- CORS allowed origins --
+    # Comma-separated list of allowed origins for the AI service.
+    # Default allows localhost development. In production set to your
+    # dashboard origin, e.g. "https://nambikkai.info,https://www.nambikkai.info"
+    CORS_ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:4000"
 
     @model_validator(mode="after")
     def validate_provider_configuration(self) -> "Settings":

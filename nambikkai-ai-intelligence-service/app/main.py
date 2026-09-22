@@ -3,6 +3,7 @@ import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import health, analyze
 from app.api.routes.suggestions import router as suggestions_router
@@ -20,7 +21,7 @@ if sys.platform == "win32":
 configure_logging()
 logger = get_logger(__name__)
 
-get_settings()
+settings = get_settings()
 
 
 @asynccontextmanager
@@ -33,6 +34,15 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(evaluate_platform_readiness("instagram"))
     except Exception as exc:
         logger.warning("PostgreSQL pool not opened at startup: %s", exc)
+
+    # Load XGBoost model artifact if configured.
+    # This is a one-time synchronous operation at startup — never done during requests.
+    try:
+        from app.ml.xgboost_service import load_model_if_configured
+        load_model_if_configured()
+    except Exception as exc:
+        logger.warning("XGBoost model load failed at startup (non-fatal): %s", exc)
+
     yield
     await close_pool()
 
@@ -42,6 +52,22 @@ app = FastAPI(
     version="0.1.0",
     description="AI intelligence layer for the Nambikkai analytics dashboard.",
     lifespan=lifespan,
+)
+
+# ── CORS ──────────────────────────────────────────────────────────────────
+# Parse comma-separated origins from configuration.
+# The AI service sits behind the dashboard backend proxy, so only the
+# backend's origin (and localhost for development) needs to be allowed.
+# Wildcard "*" is intentionally NOT used when credentials may be involved.
+_raw_origins = settings.CORS_ALLOWED_ORIGINS.strip()
+_allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()] if _raw_origins else []
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "x-api-key", "x-user-role", "x-user-email"],
 )
 
 app.include_router(health.router)

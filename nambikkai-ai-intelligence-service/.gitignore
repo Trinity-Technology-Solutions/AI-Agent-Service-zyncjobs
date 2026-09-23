@@ -15,8 +15,8 @@ service.log
 service_err.log
 service_run.log
 
-# XGBoost model artifacts (binary/large — not committed)
-models/
+# XGBoost model artifacts — committed so production servers can pull them without retraining
+# models/
 
 # IDE
 .vscode/

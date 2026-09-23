@@ -114,6 +114,22 @@ def load_model_if_configured() -> None:
         return
 
     artifact_dir = Path(model_path_str)
+
+    # ── Resolve relative paths against the service root (file location) ──────
+    # When the service is started by PM2 or systemd the current working
+    # directory may not be the service root, so a relative path like
+    # "models/track_a_xgboost" would silently fail.  We resolve it against
+    # the directory that contains this source file (app/ml/), which is always
+    # two levels below the service root regardless of CWD.
+    if not artifact_dir.is_absolute():
+        # __file__ = .../app/ml/xgboost_service.py  → parent.parent = service root
+        _service_root = Path(__file__).resolve().parent.parent.parent
+        artifact_dir = (_service_root / artifact_dir).resolve()
+        logger.info(
+            "[XGBoostService] Relative XGBOOST_MODEL_PATH resolved to: %s",
+            artifact_dir,
+        )
+
     model_file = artifact_dir / "xgboost_model.json"
     metadata_file = artifact_dir / "metadata.json"
 

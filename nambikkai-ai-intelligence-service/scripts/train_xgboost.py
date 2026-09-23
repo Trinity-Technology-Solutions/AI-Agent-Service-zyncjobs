@@ -225,16 +225,37 @@ async def run_training(platform: str, artifact_dir: str) -> dict:
         print(f"\n      Artifact saved to: {result['model_path']}")
         print(f"      Metadata saved to: {result['metadata_path']}")
 
-        # Determine qualification
-        test_f1 = meta["test_metrics"].get("f1_score")
-        min_f1 = settings.XGBOOST_MIN_TEST_F1
-        if test_f1 is not None and test_f1 >= min_f1:
-            print(f"\n      ✓ QUALIFIED: test F1={test_f1:.4f} >= threshold {min_f1}")
+        # ── Qualification check — mirrors xgboost_service.load_model_if_configured() ──
+        # The service applies 3 gates: ROC-AUC (primary), recall (secondary), F1.
+        # Report against all three so the operator sees the true qualification state.
+        test_m    = meta["test_metrics"]
+        test_auc  = test_m.get("roc_auc")
+        test_rec  = test_m.get("recall")
+        test_f1   = test_m.get("f1_score")
+        min_auc   = settings.XGBOOST_MIN_TEST_ROC_AUC
+        min_rec   = settings.XGBOOST_MIN_TEST_RECALL
+        min_f1    = settings.XGBOOST_MIN_TEST_F1
+
+        failures = []
+        if test_auc is None or test_auc < min_auc:
+            failures.append(f"ROC-AUC={test_auc} < {min_auc}")
+        if test_rec is None or test_rec < min_rec:
+            failures.append(f"recall={test_rec} < {min_rec}")
+        if test_f1 is None or test_f1 < min_f1:
+            failures.append(f"F1={test_f1} < {min_f1}")
+
+        if not failures:
+            print(f"\n      ✓ QUALIFIED — all 3 gates passed:")
+            print(f"        ROC-AUC={test_auc:.4f} >= {min_auc}")
+            print(f"        recall={test_rec:.4f}  >= {min_rec}")
+            print(f"        F1={test_f1:.4f}       >= {min_f1}")
             print(f"        prediction_available will be True after service restart.")
         else:
-            print(f"\n      ✗ NOT QUALIFIED: test F1={test_f1} < threshold {min_f1}")
+            print(f"\n      ✗ NOT QUALIFIED — {len(failures)} gate(s) failed:")
+            for f in failures:
+                print(f"        • {f}")
             print(f"        Model is saved and loadable, but predictions will NOT be served.")
-            print(f"        Collect more surge-positive events and retrain to qualify.")
+            print(f"        Collect more data with surge events and retrain to qualify.")
 
         return result
 

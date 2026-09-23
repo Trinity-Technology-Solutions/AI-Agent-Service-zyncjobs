@@ -951,6 +951,7 @@ async def _call_provider_chat(
     and call the raw completion endpoint directly, since chat answers are plain text.
     """
     from app.core.config import get_settings
+    from app.core.exceptions import ProviderUnavailableError, ProviderError
 
     settings = get_settings()
 
@@ -972,10 +973,25 @@ async def _call_provider_chat(
             write=10.0,
             pool=10.0,
         )
-        from app.core.exceptions import ProviderUnavailableError, ProviderError
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(endpoint, json=payload)
-            response.raise_for_status()
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(endpoint, json=payload)
+                response.raise_for_status()
+        except httpx.ConnectError as exc:
+            raise ProviderUnavailableError(
+                f"Cannot connect to LM Studio at {settings.LMSTUDIO_BASE_URL}"
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise ProviderUnavailableError(
+                f"LM Studio timed out after {settings.LMSTUDIO_TIMEOUT_SECONDS}s"
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise ProviderUnavailableError(
+                f"LM Studio HTTP {exc.response.status_code}"
+            ) from exc
+        except httpx.RequestError as exc:
+            raise ProviderUnavailableError(f"LM Studio request error: {exc}") from exc
+
         body = response.json()
         return body["choices"][0]["message"]["content"].strip()
 
@@ -984,9 +1000,8 @@ async def _call_provider_chat(
         import boto3
         from botocore.config import Config
         from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
-        from app.core.exceptions import ProviderUnavailableError, ProviderError
 
-        session_kwargs = {}
+        session_kwargs: dict = {}
         if settings.AWS_ACCESS_KEY_ID:
             session_kwargs["aws_access_key_id"] = settings.AWS_ACCESS_KEY_ID
         if settings.AWS_SECRET_ACCESS_KEY:
@@ -1005,9 +1020,14 @@ async def _call_provider_chat(
             region_name=settings.AWS_REGION,
             config=boto_config,
         )
-        # Use model ID exactly as configured — config already includes the
-        # correct prefix (e.g. "global.amazon.nova-2-lite-v1:0").
+
+        # Use the same model-ID remapping as BedrockProvider to ensure the
+        # global. cross-region inference prefix is applied when required.
+        # The bare "amazon.nova-2-lite-v1:0" fails with ValidationException
+        # in ap-south-1; the "global." prefix is required for cross-region calls.
         model_id = settings.BEDROCK_MODEL_ID
+        if model_id and not model_id.startswith("global.") and model_id.startswith("amazon.nova-"):
+            model_id = f"global.{model_id}"
 
         payload = {
             "modelId": model_id,
@@ -1022,15 +1042,32 @@ async def _call_provider_chat(
             response = await asyncio.to_thread(client.converse, **payload)
         except NoCredentialsError as exc:
             raise ProviderUnavailableError("AWS credentials not found.") from exc
-        except (ClientError, BotoCoreError) as exc:
-            raise ProviderUnavailableError(f"Bedrock error: {type(exc).__name__}") from exc
+        except ClientError as exc:
+            code = exc.response["Error"]["Code"]
+            msg = exc.response["Error"].get("Message", "")
+            logger.error(
+                "[chat] Bedrock ClientError: code=%s region=%s model=%s msg=%s",
+                code, settings.AWS_REGION, model_id, msg[:200],
+            )
+            raise ProviderUnavailableError(
+                f"Bedrock {code} (region={settings.AWS_REGION} model={model_id})"
+            ) from exc
+        except BotoCoreError as exc:
+            raise ProviderUnavailableError(
+                f"Bedrock connectivity error: {type(exc).__name__}"
+            ) from exc
 
-        return response["output"]["message"]["content"][0]["text"].strip()
+        try:
+            return response["output"]["message"]["content"][0]["text"].strip()
+        except (KeyError, IndexError) as exc:
+            raise ProviderError(
+                f"Unexpected Bedrock response structure: {exc}"
+            ) from exc
 
     else:
-        # Unknown provider — attempt fallback using generate_structured_analysis
-        # by constructing a minimal EvidencePackage. This path is unusual.
-        raise ValueError(f"Unknown provider '{provider_name}' for chat endpoint.")
+        raise ProviderUnavailableError(
+            f"Unknown provider '{provider_name}' — cannot generate chat response."
+        )
 
 
 def _build_fallback_answer(evidence: dict) -> str:
@@ -1048,7 +1085,7 @@ def _build_fallback_answer(evidence: dict) -> str:
             "Run a fresh AI scan to populate the latest data."
         )
 
-    lines = ["**Verified AI Insights** (LLM unavailable — raw data summary):"]
+    lines = ["**AI Insights** (AI reasoning temporarily unavailable — verified dashboard data below):"]
 
     if intent == "xgboost":
         xgb = extra.get("xgboost_status", {})
@@ -1064,11 +1101,20 @@ def _build_fallback_answer(evidence: dict) -> str:
         cls = r.get("classification", "")
         platform = r.get("platform", "")
         vr = r.get("velocity_ratio")
-        reason = r.get("evidence_reason", "")
         vr_str = f" (velocity {float(vr):.2f}x)" if vr is not None else ""
-        lines.append(f"- **{title}** [{platform}] {cls}{vr_str}")
-        if reason:
-            lines.append(f"  {reason}")
+
+        # Use classification-specific description, not the raw evidence_reason
+        # which can contain stale or contradictory text from a prior scan.
+        cls_desc: dict[str, str] = {
+            "BOOMING_SURGE": "🚀 Confirmed surge — receiving strongly above-baseline engagement",
+            "SURGE_CANDIDATE": "📈 Emerging surge signal — above-baseline velocity, still accumulating history",
+            "ELEVATED": "↑ Above-average traction — moderately outperforming baseline",
+            "LOW_PERFORMING": "⚠️ Sub-baseline performance — engagement stalled below historical average",
+            "NOMINAL": "→ Within normal baseline range",
+        }
+        desc = cls_desc.get(cls, cls)
+        lines.append(f"- **{title}** [{platform}]{vr_str}")
+        lines.append(f"  {desc}")
 
     if extra.get("publishing_windows"):
         lines.append("\n**Observed publishing windows:**")

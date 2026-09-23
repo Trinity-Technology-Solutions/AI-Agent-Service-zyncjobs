@@ -61,8 +61,12 @@ class BedrockProvider(LLMProvider):
 
     def _get_effective_model_id(self) -> str:
         model_id = self._settings.BEDROCK_MODEL_ID
-        if model_id == "amazon.nova-2-lite-v1:0":
-            return "global.amazon.nova-2-lite-v1:0"
+        # Nova models in ap-south-1 (and other non-primary regions) require the
+        # global. cross-region inference prefix on the Converse API.
+        # Apply it automatically when the configured ID is a bare amazon.nova-* ID
+        # so the operator doesn't have to remember the prefix.
+        if model_id and not model_id.startswith("global.") and model_id.startswith("amazon.nova-"):
+            return f"global.{model_id}"
         return model_id
 
     async def generate_structured_analysis(self, evidence: EvidencePackage) -> EditorialAnalysis:

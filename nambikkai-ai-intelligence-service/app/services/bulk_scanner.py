@@ -379,6 +379,12 @@ async def scan_platform(
         curr_val = int(metrics.total_views) if metrics.total_views is not None else None
         base_val = float(metrics.seven_day_rolling_hourly_baseline) if metrics.seven_day_rolling_hourly_baseline is not None else None
 
+        # ── XGBoost prediction (supplementary signal, never overrides deterministic) ──
+        # Returns None when model not loaded / prediction_available=False / < 2 snapshots.
+        xgb_result = _xgb_predict(record, metrics)
+        xgb_prob = float(xgb_result.surge_probability) if xgb_result is not None else None
+        xgb_pred = bool(xgb_result.predicted_surge) if xgb_result is not None else None
+
         base_row: dict[str, Any] = {
             "platform": platform,
             "content_id": target_id,
@@ -397,6 +403,8 @@ async def scan_platform(
             "ai_recommendation": None,
             "structured_analysis": cast(Any, None),
             "llm_status": None,
+            "xgboost_surge_probability": xgb_prob,
+            "xgboost_predicted_surge": xgb_pred,
         }
 
         if target_id in existing_generated and not force_refresh:
@@ -409,6 +417,8 @@ async def scan_platform(
             base_row["ai_recommendation"] = cached.get("ai_recommendation", "Recommendation unavailable")
             base_row["structured_analysis"] = Jsonb(cached["structured_analysis"]) if cached.get("structured_analysis") else None
             base_row["llm_status"] = "generated"
+            # Always refresh XGBoost signal with live prediction (model may have changed)
+            # xgboost_surge_probability / xgboost_predicted_surge already set above
             summary.recommendations_cached += 1
             rows_to_upsert[target_id] = base_row
             continue
@@ -477,6 +487,11 @@ async def scan_platform(
                     "ai_recommendation": pdata["ai_recommendation"],
                     "structured_analysis": cast(Any, None),
                     "llm_status": "pending",
+                    # XGBoost prediction not available for pending-queue items
+                    # (no fresh record loaded yet); will be populated when the
+                    # item is re-evaluated in the next scan cycle.
+                    "xgboost_surge_probability": None,
+                    "xgboost_predicted_surge": None,
                 }
                 llm_candidates_map[pid] = {
                     "target_id": pid,

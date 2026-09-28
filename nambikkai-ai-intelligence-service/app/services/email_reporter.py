@@ -7,7 +7,7 @@ This module MUST NOT send any email when:
   - Any of SMTP_HOST / SMTP_USER / SMTP_PASSWORD / OWNER_EMAIL are empty
 
 All SMTP credentials and addresses come exclusively from the Settings object
-(env vars).  No addresses, credentials, or host names are ever hardcoded.
+(env vars). No addresses, credentials, or host names are ever hardcoded.
 """
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def get_email_status() -> dict:
 def _is_sending_allowed() -> bool:
     """Return True only when email is fully configured and not in test mode."""
     status = get_email_status()
-    return status.get("configured", False)
+    return status.get("configured", False) and not status.get("status") == "TEST_MODE_DISABLED"
 
 
 def send_scan_report(summaries: List[dict]) -> bool:
@@ -69,7 +69,7 @@ def send_scan_report(summaries: List[dict]) -> bool:
     ----------
     summaries:
         List of dicts, each containing at least 'platform', 'actionable',
-        'scanned', 'xgboost_status'.
+        'scanned'.
 
     Returns
     -------
@@ -81,11 +81,10 @@ def send_scan_report(summaries: List[dict]) -> bool:
 
     s = get_settings()
     try:
-        subject = "Nambikkai AI — Daily Scan Report"
+        subject = "Nambikkai AI — Daily Performance Insights Scan Report"
         body_lines = ["<h2>Nambikkai AI Daily Scan Report</h2>", "<table border='1' cellpadding='4'>"]
         body_lines.append(
-            "<tr><th>Platform</th><th>Scanned</th><th>Actionable</th>"
-            "<th>Errors</th><th>XGBoost Status</th></tr>"
+            "<tr><th>Platform</th><th>Scanned</th><th>Actionable</th><th>Errors</th></tr>"
         )
         for smry in summaries:
             body_lines.append(
@@ -94,7 +93,6 @@ def send_scan_report(summaries: List[dict]) -> bool:
                 f"<td>{smry.get('scanned',0)}</td>"
                 f"<td>{smry.get('actionable',0)}</td>"
                 f"<td>{smry.get('errors',0)}</td>"
-                f"<td>{smry.get('xgboost_status','')}</td>"
                 f"</tr>"
             )
         body_lines.append("</table>")
@@ -116,4 +114,3 @@ def send_scan_report(summaries: List[dict]) -> bool:
     except Exception as exc:
         logger.error("[EmailReporter] Failed to send email: %s", exc)
         return False
-

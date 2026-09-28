@@ -8,9 +8,6 @@ GET /reports?period=hourly|daily|monthly|yearly&platform=...
   current surge/low-performing signal counts joined by content_id (not scan time).
   When history is insufficient for the requested period, returns INSUFFICIENT_COVERAGE.
 
-GET /reports/intelligence?platform=...&days=...
-  Performance Intelligence: deduplicated daily observations for executive charting.
-  Proxies to /intelligence/performance — single authoritative source of truth.
 
 GET /reports/publishing-time?platform=...
   Observed publishing-time analysis (NEVER predicted).
@@ -156,11 +153,8 @@ async def get_reports(
                         SELECT
                             DATE_TRUNC('{trunc}', h.collected_at) AS period_start,
                             COUNT(DISTINCT (h.platform, h.content_id)) FILTER (
-                                WHERE s.classification = 'BOOMING_SURGE'
-                            ) AS booming_surge,
-                            COUNT(DISTINCT (h.platform, h.content_id)) FILTER (
-                                WHERE s.classification = 'SURGE_CANDIDATE'
-                            ) AS surge_candidate,
+                                WHERE s.classification = 'HIGH_PERFORMING'
+                            ) AS high_performing,
                             COUNT(DISTINCT (h.platform, h.content_id)) FILTER (
                                 WHERE s.is_low_performing = true
                             ) AS low_performing
@@ -176,8 +170,7 @@ async def get_reports(
                         hb.total_primary_metric,
                         hb.total_likes,
                         hb.total_comments,
-                        COALESCE(sj.booming_surge, 0) AS booming_surge,
-                        COALESCE(sj.surge_candidate, 0) AS surge_candidate,
+                        COALESCE(sj.high_performing, 0) AS high_performing,
                         COALESCE(sj.low_performing, 0) AS low_performing
                     FROM history_buckets hb
                     LEFT JOIN signal_join sj ON hb.period_start = sj.period_start
@@ -212,9 +205,7 @@ async def get_reports(
                     key=lambda x: x["period_start"] if x.get("period_start") else "",
                     reverse=True,
                 ):
-                    surge_signals = int(d.get("booming_surge") or 0) + int(
-                        d.get("surge_candidate") or 0
-                    )
+                    surge_signals = int(d.get("high_performing") or 0)
                     buckets.append({
                         "period_start": d["period_start"].isoformat()
                         if d.get("period_start")
@@ -228,8 +219,7 @@ async def get_reports(
                         "total_comments": int(d["total_comments"]),
                         "metric_change_pct": d.get("metric_change_pct"),
                         "surge_signals": surge_signals,
-                        "booming_surge": int(d["booming_surge"]),
-                        "surge_candidate": int(d["surge_candidate"]),
+                        "high_performing": int(d["high_performing"]),
                         "low_performing": int(d["low_performing"]),
                         # Legacy field kept for clients; equals distinct content with activity in bucket
                         "total_suggestions": int(d["content_items_observed"]),
@@ -248,7 +238,7 @@ async def get_reports(
                     SELECT
                         COUNT(DISTINCT content_id) AS tracked_content,
                         COUNT(*) AS total_actionable,
-                        COUNT(*) FILTER (WHERE is_surge = true) AS total_surges,
+                        COUNT(*) FILTER (WHERE classification = 'HIGH_PERFORMING') AS total_high_performing,
                         COUNT(*) FILTER (WHERE is_low_performing = true) AS total_low_performing
                     FROM ai_suggestions
                     {p_cond}
@@ -260,14 +250,14 @@ async def get_reports(
                 summary_data = {
                     "tracked_content": int(sum_row[0] or 0) if sum_row else 0,
                     "total_actionable": int(sum_row[1] or 0) if sum_row else 0,
-                    "total_surges": int(sum_row[2] or 0) if sum_row else 0,
+                    "total_high_performing": int(sum_row[2] or 0) if sum_row else 0,
                     "total_low_performing": int(sum_row[3] or 0) if sum_row else 0,
                 }
 
                 item_cols = [
                     "id", "platform", "content_id", "title", "classification",
-                    "velocity_ratio", "like_acceleration", "current_metric",
-                    "baseline_metric", "coverage_hours", "evidence_reason",
+                    "current_metric", "baseline_metric",
+                    "likes", "comments", "evidence_reason",
                     "ai_recommendation", "analyzed_at",
                 ]
                 item_sql_cols = ", ".join(item_cols)
@@ -279,8 +269,8 @@ async def get_reports(
                         f"""
                     SELECT {item_sql_cols}
                     FROM ai_suggestions
-                    WHERE is_surge = true {plat_filter}
-                    ORDER BY velocity_ratio DESC NULLS LAST
+                    WHERE classification = 'HIGH_PERFORMING' {plat_filter}
+                    ORDER BY current_metric DESC NULLS LAST
                     LIMIT 15
                     """,
                     ),
@@ -295,7 +285,7 @@ async def get_reports(
                     SELECT {item_sql_cols}
                     FROM ai_suggestions
                     WHERE is_low_performing = true {plat_filter}
-                    ORDER BY velocity_ratio ASC NULLS LAST
+                    ORDER BY current_metric ASC NULLS LAST
                     LIMIT 15
                     """,
                     ),
@@ -359,39 +349,18 @@ def _serialize_items(cols: list[str], rows: list) -> list[dict]:
         if item.get("analyzed_at"):
             item["analyzed_at"] = item["analyzed_at"].isoformat()
             item["scanned_at"] = item["analyzed_at"]
-        if item.get("velocity_ratio") is not None:
-            item["velocity_ratio"] = float(item["velocity_ratio"])
-        if item.get("like_acceleration") is not None:
-            item["like_acceleration"] = float(item["like_acceleration"])
         if item.get("baseline_metric") is not None:
             item["baseline_metric"] = float(item["baseline_metric"])
-        if item.get("coverage_hours") is not None:
-            item["coverage_hours"] = float(item["coverage_hours"])
         if item.get("current_metric") is not None:
             item["current_metric"] = int(item["current_metric"])
+        if item.get("likes") is not None:
+            item["likes"] = int(item["likes"])
+        if item.get("comments") is not None:
+            item["comments"] = int(item["comments"])
         items.append(item)
     return items
 
 
-# ---------------------------------------------------------------------------
-# GET /reports/intelligence
-# Thin proxy → /intelligence/performance
-# Keeps a stable /reports/ URL surface for the dashboard backend.
-# ---------------------------------------------------------------------------
-
-@router.get("/intelligence")
-async def get_performance_intelligence_report(
-    platform: Optional[str] = Query(None, description="Filter by platform"),
-    days: int = Query(30, ge=7, le=90, description="Lookback window in days"),
-):
-    """
-    Performance Intelligence visualizations derived from deduplicated real observations.
-
-    Delegates to the canonical /intelligence/performance endpoint.
-    All data is from verified *_history_ai records — no fabrication.
-    """
-    from app.api.routes.intelligence import get_performance_intelligence
-    return await get_performance_intelligence(platform=platform, days=days)
 
 
 # ---------------------------------------------------------------------------

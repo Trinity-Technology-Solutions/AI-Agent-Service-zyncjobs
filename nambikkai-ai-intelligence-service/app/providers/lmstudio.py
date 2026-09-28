@@ -14,116 +14,121 @@ from app.providers.base import LLMProvider
 logger = get_logger(__name__)
 
 _SYSTEM_PROMPT = (
-    "You are an editorial analytics assistant. "
-    "You receive VERIFIED FACTS computed by a deterministic system from a real database. "
-    "You must NOT recalculate, override, or contradict any supplied metric. "
-    "Distinguish clearly between OBSERVED FACT, INTERPRETATION, and POSSIBLE CONTRIBUTING FACTOR. "
-    "When classification is SURGE_CANDIDATE: the content shows an early growth signal, but "
-    "there is INSUFFICIENT historical coverage to confirm a sustained trend. "
-    "You MUST NOT claim confirmed viral growth, proven sustained surge, or 7-day trend "
-    "when classification is SURGE_CANDIDATE. Use hedged language such as "
-    "'early signal', 'insufficient history to confirm', 'may indicate'. "
-    "When classification is BOOMING_SURGE with sufficient baseline: a sustained surge is supported. "
-    "When classification is LOW_PERFORMING: content view velocity has dropped substantially below baseline across a verified window. "
-    "Identify likely performance bottlenecks based strictly on verified metrics. Provide actionable recommendations for packaging, "
-    "topic/format refresh, description/keyword/hashtag improvements, cross-platform repurposing, and recommended next action. "
-    "For publishing timing: DO NOT invent optimal times. If verified history supports a pattern, state it; "
-    "otherwise explicitly state: 'Insufficient historical evidence to establish publishing timing recommendation.' "
-    "Return ONLY a valid JSON object — no markdown, no code fences, no explanation, no trailing text. "
-    "The JSON object must contain exactly these keys: "
-    "content_intent (string), "
-    "observed_signals (array of strings, min 1), "
-    "possible_contributing_factors (array of strings, min 1), "
-    "writer_recommendations (array of strings, min 1), "
-    "keyword_suggestions (array of strings), "
-    "title_suggestions (array of strings), "
-    "description_suggestions (array of strings), "
-    "hashtag_suggestions (array of strings), "
-    "cross_platform_ideas (array of strings), "
-    "confidence (float between 0.0 and 1.0), "
-    "limitations (array of strings, must include baseline coverage limitation when SURGE_CANDIDATE), "
-    "recommended_action (string, clear prioritized next step), "
-    "publishing_timing (string, timing guidance only when data supports it, otherwise stating insufficient evidence). "
-    "Use 'possible contributing factor' or 'observed signal' language — never assert causation. "
-    "Do not invent metrics. "
-    "All string values must use valid JSON escaping. "
-    "No trailing commas. Use null for missing values, not Python None. "
-    "Output the JSON object and nothing else."
+    "You are a plain-language content advisor for a media team. "
+    "You receive verified performance data about individual videos and social media posts. "
+    "Your job is to explain what is happening with a piece of content and give clear, actionable advice.\n\n"
+    "HOW TO WRITE:\n"
+    "- Write like you are talking to a smart business owner or editor, not a data analyst.\n"
+    "- Use short, direct sentences. Avoid bullet-point overload.\n"
+    "- Good example: 'This video is performing strongly. The hook grabs attention quickly and the topic is hitting well with viewers right now. "
+    "Consider making a follow-up video on the same theme while the momentum is there.'\n"
+    "- Bad example: 'Observed signals indicate elevated performance requiring replication of content intent.'\n"
+    "- Good example: 'This post is getting very little traction. The opening doesn't make it clear what viewers will learn. "
+    "Try rewriting the first few seconds to lead with the most useful insight.'\n"
+    "- Bad example: 'Performance degradation suggests optimization of content packaging and intent clarification.'\n\n"
+    "WHAT TO INCLUDE:\n"
+    "For HIGH_PERFORMING content:\n"
+    "1. Say what is working, based only on the verified metrics and transcript if available.\n"
+    "2. Give one clear action to extend or repeat this success.\n"
+    "3. If the transcript shows why it works, mention it simply.\n"
+    "For LOW_PERFORMING content:\n"
+    "1. Say what the data shows is not working.\n"
+    "2. Give one or two concrete things to try.\n"
+    "3. Do not blame the creator — focus on what can be changed.\n\n"
+    "STRICT RULES:\n"
+    "- Never invent views, likes, dates, or rankings that are not in the data.\n"
+    "- Never claim a cause unless the data or transcript actually supports it.\n"
+    "- Do not use words like: velocity ratio, performance signal, content intent, "
+    "elevated, BOOMING_SURGE, surge candidate, ML gating, baseline deviation.\n"
+    "- Do not use ** markdown bold or bullet symbols like - or * in your output.\n"
+    "- Write in plain paragraphs.\n"
+    "- If you are not sure why something is performing a certain way, say so simply: "
+    "'The exact reason is unclear from the available data, but here is what we can see.'\n"
+    "- Do not publish timing recommendations unless actual historical data is provided.\n\n"
+    "OUTPUT FORMAT:\n"
+    "Return ONLY a valid JSON object with exactly these keys:\n"
+    "content_intent (string — one plain sentence explaining what this content is about and why it performs this way),\n"
+    "observed_signals (array of strings — plain sentences about what the numbers show, min 1),\n"
+    "possible_contributing_factors (array of strings — plain sentences about likely causes, min 1),\n"
+    "writer_recommendations (array of strings — plain actionable advice sentences, min 1),\n"
+    "keyword_suggestions (array of strings),\n"
+    "title_suggestions (array of strings — natural title rewrites),\n"
+    "description_suggestions (array of strings — natural description rewrites),\n"
+    "hashtag_suggestions (array of strings),\n"
+    "cross_platform_ideas (array of strings — plain ideas for other platforms),\n"
+    "confidence (float between 0.0 and 1.0),\n"
+    "limitations (array of strings — plain notes on what we do not know),\n"
+    "recommended_action (string — one plain sentence: the single most important thing to do next),\n"
+    "publishing_timing (string — leave blank if no timing data is available).\n"
+    "No markdown. No code fences. Output the JSON object and nothing else."
 )
 
 
 def _build_user_prompt(evidence: EvidencePackage) -> str:
-    classification = evidence.gate_result.classification.value
-    raw = evidence.gate_result.raw_classification
-    cov = evidence.baseline_coverage
+    cand = getattr(evidence, "candidate", None)
+    classification = cand.performance_level.upper() if cand else "HIGH_PERFORMING"
+
+    title = cand.title if cand else evidence.content_metadata.title
+    platform = cand.platform if cand else (evidence.content_metadata.platform or "unknown")
+    content_type = cand.content_type if cand else (evidence.content_metadata.content_type or "Video")
+    url = (cand.effective_url if cand else evidence.content_metadata.canonical_url) or "N/A"
+    period = cand.period if cand else "30d"
+    metric_name = cand.metric_name if cand else "views"
+    curr_metric = cand.current_metric if cand else 0.0
+    likes = cand.likes if cand else 0.0
+    comments = cand.comments if cand else 0.0
 
     lines = [
-        "=== OBSERVED FACTS (verified, do not recalculate) ===",
-        f"Content: {evidence.content_metadata.title}",
-        f"Platform: {evidence.content_metadata.platform or 'unknown'}",
-        f"Final classification: {classification}",
+        "=== VERIFIED CONTENT DATA — do not recalculate or contradict these figures ===",
+        f"Title: {title}",
+        f"Platform: {platform}",
+        f"Content Type: {content_type}",
+        f"Canonical URL: {url}",
+        f"Analysis Period: {period}",
+        f"Performance Classification: {classification}",
+        f"Primary Metric ({metric_name}): {curr_metric:,.0f}",
+        f"Likes: {likes:,.0f}",
+        f"Comments: {comments:,.0f}",
     ]
-    if raw:
-        lines.append(f"Raw classification (before coverage adjustment): {raw.value}")
-    lines += [
-        f"Velocity ratio: {evidence.gate_result.velocity_ratio}",
-        f"Like acceleration: {evidence.gate_result.like_acceleration}",
-        f"Gate reason: {evidence.gate_result.reason}",
-        f"LLM eligible: {evidence.gate_result.llm_eligible}",
-        f"Baseline available: {evidence.data_quality.baseline_available}",
-    ]
-    if cov:
-        lines += [
-            f"Requested baseline window: {cov.requested_hours:.0f} hours",
-            f"Available history: {cov.available_hours:.1f} hours",
-            f"Baseline sufficient: {cov.sufficient}",
-        ]
-    if evidence.data_quality.notes:
-        lines.append(f"Coverage notes: {evidence.data_quality.notes}")
+    if cand and cand.published_at:
+        lines.append(f"Published: {cand.published_at}")
+    if cand and cand.peer_explanation:
+        lines.append(f"Peer Comparison Evidence: {cand.peer_explanation}")
 
-    if classification == "SURGE_CANDIDATE":
-        cov_text = (
-            f"Only {cov.available_hours:.1f}h of history is available versus {cov.requested_hours:.0f}h requested."
-            if cov
-            else "Limited baseline history is available."
-        )
+    if classification == "HIGH_PERFORMING":
         lines += [
             "",
-            "=== INTERPRETATION CONSTRAINT ===",
-            "Classification is SURGE_CANDIDATE: this is an EARLY SIGNAL only.",
-            cov_text,
-            "You MUST NOT claim confirmed viral growth or proven sustained trend.",
-            "Use hedged language: 'early signal', 'may indicate', "
-            "'insufficient history to confirm'.",
-            "The limitations field MUST note the insufficient baseline coverage.",
+            f"=== INTERPRETATION CONSTRAINT ({classification}) ===",
+            "This content is performing well above average for the selected period.",
+            "In plain language:",
+            "1. Explain why it is performing strongly based strictly on verified metrics and transcript if available.",
+            "2. Give one clear recommendation to extend or repeat this success.",
+            "3. If the transcript is available, mention what the opening or topic tells us.",
+            "4. Note anything we cannot be certain about from the data alone.",
         ]
-    elif classification == "BOOMING_SURGE":
+    else:
         lines += [
             "",
-            "=== INTERPRETATION CONSTRAINT ===",
-            "Classification is BOOMING_SURGE with sufficient baseline coverage.",
-            "A sustained surge pattern is supported by the available history.",
-            "Still use 'observed signal' and 'possible contributing factor' language.",
-        ]
-    elif classification == "LOW_PERFORMING":
-        cov_h = f"{cov.available_hours:.1f}h" if cov else "established"
-        lines += [
-            "",
-            "=== INTERPRETATION CONSTRAINT ===",
-            "Classification is LOW_PERFORMING: view velocity has stalled below baseline.",
-            f"Verified history span: {cov_h}.",
-            "Identify likely performance bottlenecks based strictly on verified metrics.",
-            "Provide actionable advice on title/packaging refresh, format adjustments, and repurposing.",
-            "In publishing_timing, state explicitly whether available history supports timing or if evidence is insufficient.",
+            f"=== INTERPRETATION CONSTRAINT ({classification}) ===",
+            "This content is underperforming relative to similar content in the selected period.",
+            "In plain language:",
+            "1. Identify observed limitations and bottlenecks based strictly on verified metrics.",
+            "2. Give one or two concrete things the team could try.",
+            "3. If the transcript is available, mention whether the opening or topic might be a factor.",
+            "4. Note anything we cannot be certain about from the data alone.",
         ]
 
     if evidence.transcript_excerpt:
-        lines.append(f"Excerpt: {evidence.transcript_excerpt}")
-    if evidence.regional_signals:
-        lines.append(f"Regional: {evidence.regional_signals}")
+        lines += [
+            "",
+            "=== CONTENT TRANSCRIPT / TEXT (verified excerpt) ===",
+            "Use this to understand the topic, opening, and structure. "
+            "Do not claim the transcript proves any performance cause — only note what it shows.",
+            evidence.transcript_excerpt,
+        ]
+
     lines.append("Return the JSON object now.")
     return "\n".join(lines)
-
 
 
 def _strip_fences(text: str) -> str:
@@ -183,15 +188,15 @@ class LMStudioProvider(LLMProvider):
         t_start = time.monotonic()
         response = None
         try:
-            # IMPORTANT: raise_for_status() must be called INSIDE the async with block.
-            # Calling it after the block exits closes the connection before the response
-            # body can be read, causing Channel Error on non-2xx responses.
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(endpoint, json=payload)
                 response.raise_for_status()
         except httpx.ConnectError as exc:
             raise ProviderUnavailableError(
-                f"Cannot connect to LM Studio at {settings.LMSTUDIO_BASE_URL}"
+                f"Cannot connect to LM Studio at {settings.LMSTUDIO_BASE_URL}. "
+                f"Check: 1) Is LM Studio running on the target machine? "
+                f"2) Is LMSTUDIO_BASE_URL in .env pointing to the correct IP address and port? "
+                f"3) Is port 1234 accessible from this machine?"
             ) from exc
         except httpx.TimeoutException as exc:
             duration_ms = int((time.monotonic() - t_start) * 1000)
@@ -205,24 +210,52 @@ class LMStudioProvider(LLMProvider):
             ) from exc
         except httpx.HTTPStatusError as exc:
             duration_ms = int((time.monotonic() - t_start) * 1000)
-            # Safely capture the response body for diagnostics — it is still readable
-            # here because raise_for_status() is now called inside the async with block.
             try:
                 error_body = exc.response.text[:500]
             except Exception:
                 error_body = "<unreadable>"
+            status_code = exc.response.status_code
             logger.error(
                 "LMStudio HTTP error",
                 extra={
                     "request_id": request_id,
-                    "status_code": exc.response.status_code,
+                    "status_code": status_code,
                     "duration_ms": duration_ms,
                     "model": settings.LMSTUDIO_MODEL,
+                    "base_url": settings.LMSTUDIO_BASE_URL,
                     "error_body": error_body,
                 },
             )
+            # HTTP 4xx from LM Studio that indicates server-side unavailability
+            # (e.g. "No models loaded") is an availability issue, not a model
+            # output validation failure.  Raise ProviderUnavailableError so the
+            # caller (bulk_scanner) records llm_status = "unavailable" and the
+            # frontend renders "LLM Unavailable" rather than "Validation Failed".
+            no_model_indicators = [
+                "no models loaded",
+                "no model loaded",
+                "please load a model",
+                "lms load",
+                "model not found",
+                "model_not_found",
+            ]
+            error_lower = error_body.lower()
+            if status_code in (400, 404, 503) and any(ind in error_lower for ind in no_model_indicators):
+                raise ProviderUnavailableError(
+                    f"LM Studio has no model loaded or the configured model is not found "
+                    f"(request_id={request_id}, HTTP {status_code}, model={settings.LMSTUDIO_MODEL}, "
+                    f"url={settings.LMSTUDIO_BASE_URL}). "
+                    f"Check: 1) Is the correct model loaded in LM Studio? "
+                    f"2) Does LMSTUDIO_MODEL in .env match the loaded model identifier? "
+                    f"3) Is LMSTUDIO_BASE_URL pointing to the correct IP address and port?"
+                ) from exc
+            if status_code >= 500:
+                raise ProviderUnavailableError(
+                    f"LM Studio server error HTTP {status_code} "
+                    f"(request_id={request_id}, url={settings.LMSTUDIO_BASE_URL}): {error_body}"
+                ) from exc
             raise ProviderError(
-                f"LM Studio HTTP {exc.response.status_code} "
+                f"LM Studio HTTP {status_code} "
                 f"(request_id={request_id}): {error_body}"
             ) from exc
         except httpx.RequestError as exc:

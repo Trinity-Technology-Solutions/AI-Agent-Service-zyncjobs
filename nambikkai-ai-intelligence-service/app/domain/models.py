@@ -1,30 +1,69 @@
 from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import Optional, Any
 from pydantic import BaseModel, Field
 
 
-# ── Enums ──────────────────────────────────────────────────────────────────
+# ── Performance Classification ─────────────────────────────────────────────
 
-class GateClassification(str, Enum):
-    NOMINAL = "NOMINAL"
-    ELEVATED = "ELEVATED"
-    BOOMING_SURGE = "BOOMING_SURGE"
-    SURGE_CANDIDATE = "SURGE_CANDIDATE"
+class PerformanceClassification(str, Enum):
+    HIGH_PERFORMING = "HIGH_PERFORMING"
     LOW_PERFORMING = "LOW_PERFORMING"
 
 
 class AnalysisStatus(str, Enum):
     SUCCESS = "SUCCESS"
-    SKIPPED_NOMINAL = "SKIPPED_NOMINAL"
-    MONITORING = "MONITORING"
-    INVALID = "INVALID"
-    PROVIDER_ERROR = "PROVIDER_ERROR"
+    FAILED_VALIDATION = "FAILED_VALIDATION"
+    UNAVAILABLE = "UNAVAILABLE"
+    NOT_ELIGIBLE = "NOT_ELIGIBLE"
     WAITING_FOR_DATA = "WAITING_FOR_DATA"
 
 
-# ── Input domain ───────────────────────────────────────────────────────────
+# ── Authoritative Performance Candidate (from Dashboard) ──────────────────
+
+class PerformanceCandidate(BaseModel):
+    """
+    Authoritative performance candidate provided by the dashboard performance engine.
+    The AI service does NOT classify, gate, or rank performance.
+    """
+    platform: str
+    content_id: str
+    account_key: str = ""
+    performance_level: str  # 'HIGH_PERFORMING' | 'LOW_PERFORMING'
+    content_type: str = "Video"
+    title: str = ""
+    url: Optional[str] = None
+    canonical_url: Optional[str] = None
+    published_at: Optional[str] = None
+    period: str = "30d"
+    current_metric: float = 0.0
+    baseline_metric: Optional[float] = None
+    metric_name: str = "views"
+    likes: float = 0.0
+    comments: float = 0.0
+    peer_explanation: str = ""
+    transcript: Optional[str] = None
+    transcript_status: Optional[str] = None
+
+    @property
+    def effective_url(self) -> Optional[str]:
+        raw = (self.canonical_url or self.url or "").strip()
+        is_cdn = any(cdn in raw.lower() for cdn in [
+            "fbcdn.net", "cdninstagram.com", "akamaihd.net", "fbsbx.com", "cdn.", ".fbcdn."
+        ]) or any(raw.lower().endswith(ext) for ext in [".mp4", ".jpg", ".jpeg", ".png", ".webp"])
+        if is_cdn or not raw:
+            p = (self.platform or "").lower()
+            ct = (self.content_type or "").lower()
+            cid = self.content_id
+            if p == "youtube":
+                return f"https://www.youtube.com/shorts/{cid}" if "short" in ct else f"https://www.youtube.com/watch?v={cid}"
+            elif p == "instagram":
+                return f"https://www.instagram.com/reel/{cid}/" if "reel" in ct else f"https://www.instagram.com/p/{cid}/"
+            elif p == "facebook":
+                return f"https://www.facebook.com/{cid}"
+        return raw or None
+
 
 class ContentMetadata(BaseModel):
     content_id: str
@@ -32,86 +71,11 @@ class ContentMetadata(BaseModel):
     creator_id: str
     platform: Optional[str] = None
     published_at: Optional[datetime] = None
+    content_type: Optional[str] = None
+    canonical_url: Optional[str] = None
 
 
-class ContentMetrics(BaseModel):
-    current_hour_delta_views: float = Field(ge=0)
-    seven_day_rolling_hourly_baseline: float = Field(ge=0)
-    one_hour_delta_likes: float = Field(ge=0)
-    one_hour_delta_views: float = Field(ge=0)
-    total_views: Optional[float] = None
-    total_likes: Optional[float] = None
-
-
-# ── PostgreSQL normalized representation ───────────────────────────────────
-
-class HistorySnapshot(BaseModel):
-    """One row from a *_history table, platform-agnostic."""
-    collected_at: datetime
-    published_at: datetime
-    primary_metric_name: str   # "views" | "reach"
-    primary_metric_value: int
-    likes: int
-    comments: int
-
-
-class NormalizedContentRecord(BaseModel):
-    """
-    Joined result of *_history + *_content for a single content item.
-    Preserves platform-specific metric semantics.
-    """
-    platform: str
-    content_id: str
-    account_key: str           # channel_key | account_key
-    primary_metric_name: str   # "views" for YouTube, "reach" for Instagram/Facebook
-    history: list[HistorySnapshot]
-    # Content metadata — None when the content row is missing
-    title: Optional[str] = None          # YouTube only
-    caption: Optional[str] = None        # Instagram / Facebook
-    description: Optional[str] = None    # YouTube only
-    category: Optional[str] = None
-    language: Optional[str] = None
-    creator_id: Optional[str] = None     # YouTube only
-    media_type: Optional[str] = None     # Instagram only
-    post_type: Optional[str] = None      # Facebook only
-    url: Optional[str] = None
-    content_published_at: Optional[datetime] = None
-
-
-class AnalyticsEvent(BaseModel):
-    event_id: str
-    received_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    metadata: ContentMetadata
-    metrics: ContentMetrics
-
-
-# ── Gating ─────────────────────────────────────────────────────────────────
-
-class GateResult(BaseModel):
-    classification: GateClassification
-    velocity_ratio: Optional[float] = None
-    like_acceleration: Optional[float] = None
-    reason: str
-    llm_eligible: bool = False
-    raw_classification: Optional[GateClassification] = None
-
-
-# ── Baseline coverage ─────────────────────────────────────────────────────
-
-class BaselineCoverage(BaseModel):
-    """
-    Describes how much history was actually available versus what was requested.
-
-    When available_hours < requested_hours the baseline is computed from a
-    shorter window than intended.  The gating layer uses this to prevent an
-    insufficient baseline from silently producing a high-confidence surge.
-    """
-    requested_hours: float
-    available_hours: float
-    sufficient: bool  # True only when available_hours >= requested_hours
-
-
-# ── Evidence ───────────────────────────────────────────────────────────────
+# ── Data Quality ───────────────────────────────────────────────────────────
 
 class DataQuality(BaseModel):
     baseline_available: bool = True
@@ -119,19 +83,36 @@ class DataQuality(BaseModel):
     notes: Optional[str] = None
 
 
+# ── Evidence Package ───────────────────────────────────────────────────────
+
 class EvidencePackage(BaseModel):
-    content_metadata: ContentMetadata
-    verified_metrics: ContentMetrics
-    gate_result: GateResult
-    baseline_coverage: Optional[BaselineCoverage] = None
+    """
+    Bounded evidence package constructed strictly from verified candidate data,
+    metadata, and transcripts. No second performance classification is performed.
+    """
+    candidate: PerformanceCandidate
     transcript_excerpt: Optional[str] = None
     regional_signals: Optional[dict] = None
     data_quality: DataQuality = Field(default_factory=DataQuality)
 
+    @property
+    def content_metadata(self) -> ContentMetadata:
+        return ContentMetadata(
+            content_id=self.candidate.content_id,
+            title=self.candidate.title,
+            creator_id=self.candidate.account_key,
+            platform=self.candidate.platform,
+            content_type=self.candidate.content_type,
+            canonical_url=self.candidate.effective_url,
+        )
 
-# ── AI output ──────────────────────────────────────────────────────────────
+
+# ── AI Structured Analysis ─────────────────────────────────────────────────
 
 class EditorialAnalysis(BaseModel):
+    """
+    Structured editorial insight generated by the LLM based strictly on verified evidence.
+    """
     content_intent: str
     observed_signals: list[str]
     possible_contributing_factors: list[str]
@@ -147,22 +128,11 @@ class EditorialAnalysis(BaseModel):
     publishing_timing: Optional[str] = None
 
 
-
 # ── Validation ─────────────────────────────────────────────────────────────
 
 class ValidationResult(BaseModel):
     is_valid: bool
     failures: list[str] = Field(default_factory=list)
-
-
-# ── Final result ───────────────────────────────────────────────────────────
-
-class AnalysisResult(BaseModel):
-    status: AnalysisStatus
-    gate_result: GateResult
-    editorial_analysis: Optional[EditorialAnalysis] = None
-    validation_result: Optional[ValidationResult] = None
-    message: Optional[str] = None
 
 
 # ── Audit ──────────────────────────────────────────────────────────────────
@@ -171,9 +141,8 @@ class AuditRecord(BaseModel):
     event_id: str
     content_id: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    gate_classification: GateClassification
+    classification: PerformanceClassification
     analysis_status: AnalysisStatus
     provider_used: Optional[str] = None
     validation_passed: Optional[bool] = None
     llm_invoked: bool = False
-    raw_classification: Optional[GateClassification] = None

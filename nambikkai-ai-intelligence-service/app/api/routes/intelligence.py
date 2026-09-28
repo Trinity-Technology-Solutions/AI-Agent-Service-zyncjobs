@@ -1,7 +1,6 @@
 """
 Intelligence API routes.
 
-GET  /intelligence/performance   — Performance chart data (deduplicated daily observations)
 GET  /intelligence/publishing    — Observed publishing time analysis per platform
 POST /intelligence/chat          — AI Assistant: grounded evidence retrieval → LLM → validated response
 
@@ -29,243 +28,8 @@ router = APIRouter(prefix="/intelligence", tags=["intelligence"])
 VALID_PLATFORMS = list(_PLATFORM_CFG.keys())  # ["youtube", "instagram", "facebook"]
 
 
-# ---------------------------------------------------------------------------
-# Helper: build a history UNION across requested platforms
-# ---------------------------------------------------------------------------
-
-def _build_history_union(platforms: list[str]) -> str:
-    parts: list[str] = []
-    for p in platforms:
-        cfg = _PLATFORM_CFG[p]
-        metric = cfg["primary_metric"]
-        id_col = cfg["id_col"]
-        table = cfg["history_table"]
-        account_col = cfg["account_col"]
-        parts.append(
-            f"SELECT '{p}'::text AS platform, {id_col}::text AS content_id, "
-            f"{account_col}::text AS account_key, "
-            f"collected_at, {metric}::bigint AS primary_metric, "
-            f"likes::bigint AS likes, comments::bigint AS comments "
-            f"FROM {table}"
-        )
-    return " UNION ALL ".join(parts)
 
 
-# ---------------------------------------------------------------------------
-# GET /intelligence/performance
-# ---------------------------------------------------------------------------
-
-@router.get("/performance")
-async def get_performance_intelligence(
-    platform: Optional[str] = Query(None, description="Filter by platform"),
-    days: int = Query(30, ge=7, le=90, description="Lookback window in days"),
-):
-    """
-    Return deduplicated daily performance observations for charting.
-
-    Uses DATE_TRUNC('day', collected_at) to produce one row per (platform, content_id, day),
-    avoiding inflation from repeated ingestion of the same data point.
-
-    Returns:
-    - daily_series: [{date, total_primary_metric, total_likes, total_comments,
-                       content_items_observed, surge_signals, low_performing_signals}]
-    - platform_breakdown: [{platform, total_primary_metric, content_items, obs_days}]
-    - top_performers: top 5 content items by total observed primary metric
-    - coverage: {observed_days, first_observation, last_observation, total_observations}
-    """
-    try:
-        platforms = [platform] if platform and platform in VALID_PLATFORMS else VALID_PLATFORMS
-        union = _build_history_union(platforms)
-        pool = _get_pool()
-
-        async with pool.connection() as conn:
-            async with conn.cursor() as cur:
-
-                # 1. Deduplicated daily series — one row per (platform, content_id, day)
-                await cur.execute(
-                    cast(
-                        LiteralString,
-                        f"""
-                    WITH deduped AS (
-                        SELECT
-                            platform,
-                            content_id,
-                            DATE_TRUNC('day', collected_at) AS obs_day,
-                            MAX(primary_metric) AS metric,
-                            MAX(likes) AS likes,
-                            MAX(comments) AS comments
-                        FROM ({union}) h
-                        WHERE collected_at >= NOW() - INTERVAL '{days} days'
-                        GROUP BY platform, content_id, obs_day
-                    ),
-                    daily AS (
-                        SELECT
-                            obs_day,
-                            SUM(metric) AS total_primary_metric,
-                            SUM(likes) AS total_likes,
-                            SUM(comments) AS total_comments,
-                            COUNT(DISTINCT content_id) AS content_items_observed
-                        FROM deduped
-                        GROUP BY obs_day
-                        ORDER BY obs_day
-                    )
-                    SELECT
-                        daily.*,
-                        COALESCE(surge_counts.surge_signals, 0) AS surge_signals,
-                        COALESCE(lp_counts.low_signals, 0) AS low_performing_signals
-                    FROM daily
-                    LEFT JOIN (
-                        SELECT DATE_TRUNC('day', analyzed_at) AS d, COUNT(*) AS surge_signals
-                        FROM ai_suggestions
-                        WHERE classification IN ('BOOMING_SURGE','SURGE_CANDIDATE')
-                          AND analyzed_at >= NOW() - INTERVAL '{days} days'
-                        GROUP BY d
-                    ) surge_counts ON surge_counts.d = daily.obs_day
-                    LEFT JOIN (
-                        SELECT DATE_TRUNC('day', analyzed_at) AS d, COUNT(*) AS low_signals
-                        FROM ai_suggestions
-                        WHERE classification = 'LOW_PERFORMING'
-                          AND analyzed_at >= NOW() - INTERVAL '{days} days'
-                        GROUP BY d
-                    ) lp_counts ON lp_counts.d = daily.obs_day
-                    ORDER BY daily.obs_day
-                    """,
-                    )
-                )
-                daily_rows = await cur.fetchall()
-                daily_cols = [d[0] for d in cur.description] if cur.description else []
-
-                # 2. Platform breakdown
-                await cur.execute(
-                    cast(
-                        LiteralString,
-                        f"""
-                    WITH deduped AS (
-                        SELECT
-                            platform,
-                            content_id,
-                            DATE_TRUNC('day', collected_at) AS obs_day,
-                            MAX(primary_metric) AS metric
-                        FROM ({union}) h
-                        WHERE collected_at >= NOW() - INTERVAL '{days} days'
-                        GROUP BY platform, content_id, obs_day
-                    )
-                    SELECT
-                        platform,
-                        SUM(metric) AS total_primary_metric,
-                        COUNT(DISTINCT content_id) AS content_items,
-                        COUNT(DISTINCT obs_day) AS obs_days
-                    FROM deduped
-                    GROUP BY platform
-                    ORDER BY total_primary_metric DESC
-                    """,
-                    )
-                )
-                platform_rows = await cur.fetchall()
-                platform_cols = [d[0] for d in cur.description] if cur.description else []
-
-                # 3. Top performers from ai_suggestions (verified classifications)
-                platform_filter = "AND platform = ANY(%s)" if platform else ""
-                platform_filter_param = [platforms] if platform else []
-                await cur.execute(
-                    cast(
-                        LiteralString,
-                        f"""
-                    WITH latest AS (
-                        SELECT DISTINCT ON (platform, content_id)
-                            platform, content_id, title, classification,
-                            current_metric, velocity_ratio, analyzed_at
-                        FROM ai_suggestions
-                        WHERE classification IN ('BOOMING_SURGE','SURGE_CANDIDATE','ELEVATED','LOW_PERFORMING')
-                        {platform_filter}
-                        ORDER BY platform, content_id, analyzed_at DESC
-                    )
-                    SELECT platform, content_id, title, classification, current_metric, velocity_ratio
-                    FROM latest
-                    ORDER BY velocity_ratio DESC NULLS LAST, current_metric DESC NULLS LAST
-                    LIMIT 5
-                    """,
-                    ),
-                    platform_filter_param if platform else [],
-                )
-                top_rows = await cur.fetchall()
-                top_cols = [d[0] for d in cur.description] if cur.description else []
-
-                # 4. Coverage metadata
-                await cur.execute(
-                    cast(
-                        LiteralString,
-                        f"""
-                    SELECT
-                        COUNT(DISTINCT DATE_TRUNC('day', collected_at)) AS observed_days,
-                        MIN(collected_at) AS first_observation,
-                        MAX(collected_at) AS last_observation,
-                        COUNT(*) AS total_observations
-                    FROM ({union}) h
-                    WHERE collected_at >= NOW() - INTERVAL '{days} days'
-                    """,
-                    )
-                )
-                cov_row = await cur.fetchone()
-
-        # Serialize
-        daily_series = []
-        for row in daily_rows:
-            d = dict(zip(daily_cols, row))
-            d["date"] = d["obs_day"].isoformat() if d.get("obs_day") else None
-            d.pop("obs_day", None)
-            for k in ("total_primary_metric", "total_likes", "total_comments"):
-                d[k] = int(d[k]) if d.get(k) is not None else 0
-            d["content_items_observed"] = int(d.get("content_items_observed") or 0)
-            d["surge_signals"] = int(d.get("surge_signals") or 0)
-            d["low_performing_signals"] = int(d.get("low_performing_signals") or 0)
-            daily_series.append(d)
-
-        platform_breakdown = []
-        for row in platform_rows:
-            d = dict(zip(platform_cols, row))
-            d["total_primary_metric"] = int(d.get("total_primary_metric") or 0)
-            d["content_items"] = int(d.get("content_items") or 0)
-            d["obs_days"] = int(d.get("obs_days") or 0)
-            platform_breakdown.append(d)
-
-        top_performers = []
-        for row in top_rows:
-            d = dict(zip(top_cols, row))
-            if d.get("velocity_ratio") is not None:
-                d["velocity_ratio"] = float(d["velocity_ratio"])
-            if d.get("current_metric") is not None:
-                d["current_metric"] = int(d["current_metric"])
-            top_performers.append(d)
-
-        coverage = {
-            "observed_days": int(cov_row[0] or 0) if cov_row else 0,
-            "first_observation": cov_row[1].isoformat() if cov_row and cov_row[1] else None,
-            "last_observation": cov_row[2].isoformat() if cov_row and cov_row[2] else None,
-            "total_observations": int(cov_row[3] or 0) if cov_row else 0,
-        }
-
-        from app.ml.readiness import get_xgboost_status_detail
-        xgb_platform = platforms[0] if len(platforms) == 1 else None
-        xgboost_status = get_xgboost_status_detail(xgb_platform)
-
-        return {
-            "ok": True,
-            "days_requested": days,
-            "platforms": platforms,
-            "daily_series": daily_series,
-            "platform_breakdown": platform_breakdown,
-            "top_performers": top_performers,
-            "coverage": coverage,
-            "xgboost_status": xgboost_status,
-        }
-
-    except Exception as exc:
-        logger.error("[/intelligence/performance] Error: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to fetch performance intelligence.")
-
-
-# ---------------------------------------------------------------------------
 # GET /intelligence/publishing
 # ---------------------------------------------------------------------------
 
@@ -442,14 +206,9 @@ async def get_publishing_intelligence(
                         "best_days": best_days if sufficient else [],
                     })
 
-        from app.ml.readiness import get_xgboost_status_detail
-        xgb_platform = platforms[0] if len(platforms) == 1 else None
-        xgboost_status = get_xgboost_status_detail(xgb_platform)
-
         return {
             "ok": True,
             "publishing_intelligence": results,
-            "xgboost_status": xgboost_status,
         }
 
     except Exception as exc:
@@ -464,6 +223,8 @@ async def get_publishing_intelligence(
 class ChatRequest(BaseModel):
     question: str
     platform: Optional[str] = None
+    period: Optional[str] = None
+    content_type: Optional[str] = None
     # Bounded conversation history for follow-up context.
     # Client sends the last N turns; server never stores session state.
     # Max 6 turns (3 user + 3 assistant) to keep context bounded.
@@ -477,25 +238,33 @@ class ChatRequest(BaseModel):
 def _classify_intent(question: str) -> str:
     """
     Classify the question intent to select the right evidence query.
-    Returns one of: surge | low_performing | publishing | specific_content |
-                    platform_overview | xgboost | total_count
+    Returns one of: casual | specific_content | high_performing | low_performing | publishing | platform_overview
     """
-    q = question.lower()
-    # Specific content query — look for quoted strings or 'this video/content'
+    q = question.lower().strip()
+
+    # Casual conversation — do not query analytics for these
+    casual_patterns = [
+        "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
+        "good night", "thanks", "thank you", "thank", "bye", "goodbye", "see you",
+        "cheers", "great", "ok", "okay", "sure", "got it", "sounds good",
+        "how are you", "what can you do", "who are you", "what are you",
+        "help me", "what do you do",
+    ]
+    for pat in casual_patterns:
+        if q == pat or q.startswith(pat + " ") or q.endswith(" " + pat) or q == pat + "!":
+            return "casual"
+    # Short greetings / thanks with punctuation
+    if len(q) <= 15 and any(w in q for w in ["hi", "hello", "hey", "thanks", "thank", "bye"]):
+        return "casual"
+
     if any(w in q for w in ["this video", "this content", "this post", "this reel", "why is"]):
         return "specific_content"
-    if any(w in q for w in ["surge", "surging", "trending", "viral", "boom", "spike"]):
-        return "surge"
-    if any(w in q for w in ["low", "performing", "underperform", "poor", "struggle", "stalled", "dropping"]):
+    if any(w in q for w in ["high", "surge", "surging", "trending", "viral", "boom", "spike", "top", "best", "strongest", "leading"]):
+        return "high_performing"
+    if any(w in q for w in ["low", "underperform", "poor", "struggle", "stalled", "dropping", "attention", "improve", "fix", "needs", "worst", "weakest"]):
         return "low_performing"
     if any(w in q for w in ["publish", "when should", "best time", "post time", "schedule", "timing"]):
         return "publishing"
-    if any(w in q for w in ["xgboost", "ml", "machine learning", "predict", "model"]):
-        return "xgboost"
-    if any(w in q for w in ["what is happening", "overview", "summary", "platform", "youtube", "instagram", "facebook"]):
-        return "platform_overview"
-    if any(w in q for w in ["how many", "total", "count", "number of", "top", "best", "highest", "most view", "next", "do next", "recommend"]):
-        return "top_content"
     return "platform_overview"
 
 
@@ -503,6 +272,8 @@ async def _retrieve_evidence(
     intent: str,
     platform: Optional[str],
     question: str,
+    period: Optional[str] = None,
+    content_type: Optional[str] = None,
 ) -> dict:
     """
     Retrieve verified evidence from the database for the classified intent.
@@ -510,61 +281,115 @@ async def _retrieve_evidence(
     Returns a dict with:
         - intent: the classified intent
         - records: list of verified DB rows
-        - extra: optional additional context (e.g. publishing windows, xgboost status)
+        - extra: optional additional context
         - record_count: number of records retrieved
     """
     pool = _get_pool()
     valid_platforms = list(_PLATFORM_CFG.keys())
     plat_filter = platform if (platform and platform in valid_platforms) else None
 
+    q_lower = question.lower()
+    # Content type inference
+    inferred_content_type: Optional[str] = None
+    if content_type and content_type.lower() != "all":
+        inferred_content_type = f"%{content_type}%"
+    else:
+        if "short" in q_lower:
+            inferred_content_type = "%Short%"
+        elif "reel" in q_lower:
+            inferred_content_type = "%Reel%"
+        elif "post" in q_lower:
+            inferred_content_type = "%Post%"
+
+    # Period inference
+    inferred_period: Optional[str] = None
+    if period and period.lower() != "all":
+        inferred_period = period.lower()
+    else:
+        if "7d" in q_lower or "7 day" in q_lower or "seven day" in q_lower:
+            inferred_period = "7d"
+        elif "90d" in q_lower or "90 day" in q_lower:
+            inferred_period = "90d"
+        elif "30d" in q_lower or "30 day" in q_lower or "month" in q_lower:
+            inferred_period = "30d"
+
+    # Platform inference if not provided
+    if not plat_filter:
+        if "youtube" in q_lower:
+            plat_filter = "youtube"
+        elif "instagram" in q_lower or "insta" in q_lower:
+            plat_filter = "instagram"
+        elif "facebook" in q_lower or "fb" in q_lower:
+            plat_filter = "facebook"
+
     records: list[dict] = []
-    extra: dict = {}
+    extra: dict = {
+        "platform_filter": plat_filter,
+        "content_type_filter": inferred_content_type,
+        "period_filter": inferred_period,
+    }
 
     try:
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
 
-                if intent == "surge":
-                    sql = """
-                        SELECT platform, content_id, title, classification,
-                               velocity_ratio, like_acceleration, evidence_reason,
-                               ai_recommendation, coverage_hours, analyzed_at
+                if intent == "high_performing":
+                    clauses = ["classification = 'HIGH_PERFORMING'"]
+                    params = []
+                    if plat_filter:
+                        clauses.append("platform = %s")
+                        params.append(plat_filter)
+                    if inferred_content_type:
+                        clauses.append("content_type ILIKE %s")
+                        params.append(inferred_content_type)
+                    if inferred_period:
+                        clauses.append("report_period = %s")
+                        params.append(inferred_period)
+                    sql = f"""
+                        SELECT platform, content_id, title, content_type, canonical_url,
+                               classification, current_metric, baseline_metric, metric_name,
+                               likes, comments, peer_explanation, evidence_reason,
+                               ai_recommendation, report_period, analyzed_at
                         FROM ai_suggestions
-                        WHERE classification IN ('BOOMING_SURGE', 'SURGE_CANDIDATE')
-                        {}
-                        ORDER BY analyzed_at DESC, velocity_ratio DESC NULLS LAST
+                        WHERE {" AND ".join(clauses)}
+                        ORDER BY analyzed_at DESC, current_metric DESC NULLS LAST
                         LIMIT 8
-                    """.format("AND platform = %s" if plat_filter else "")
-                    await cur.execute(
-                        cast(LiteralString, sql),
-                        [plat_filter] if plat_filter else [],
-                    )
+                    """
+                    await cur.execute(cast(LiteralString, sql), params)
 
                 elif intent == "low_performing":
-                    sql = """
-                        SELECT platform, content_id, title, classification,
-                               velocity_ratio, baseline_metric, evidence_reason,
-                               ai_recommendation, coverage_hours, analyzed_at
+                    clauses = ["classification = 'LOW_PERFORMING'"]
+                    params = []
+                    if plat_filter:
+                        clauses.append("platform = %s")
+                        params.append(plat_filter)
+                    if inferred_content_type:
+                        clauses.append("content_type ILIKE %s")
+                        params.append(inferred_content_type)
+                    if inferred_period:
+                        clauses.append("report_period = %s")
+                        params.append(inferred_period)
+                    sql = f"""
+                        SELECT platform, content_id, title, content_type, canonical_url,
+                               classification, current_metric, baseline_metric, metric_name,
+                               likes, comments, peer_explanation, evidence_reason,
+                               ai_recommendation, report_period, analyzed_at
                         FROM ai_suggestions
-                        WHERE classification = 'LOW_PERFORMING'
-                        {}
-                        ORDER BY analyzed_at DESC
+                        WHERE {" AND ".join(clauses)}
+                        ORDER BY analyzed_at DESC, current_metric ASC NULLS LAST
                         LIMIT 8
-                    """.format("AND platform = %s" if plat_filter else "")
-                    await cur.execute(
-                        cast(LiteralString, sql),
-                        [plat_filter] if plat_filter else [],
-                    )
+                    """
+                    await cur.execute(cast(LiteralString, sql), params)
 
                 elif intent == "publishing":
-                    # Retrieve best observed publishing windows per platform
                     sql = """
-                        SELECT platform, content_id, title, classification,
-                               velocity_ratio, evidence_reason, analyzed_at
+                        SELECT platform, content_id, title, content_type, canonical_url,
+                               classification, current_metric, baseline_metric,
+                               evidence_reason, analyzed_at
                         FROM ai_suggestions
-                        WHERE classification IN ('BOOMING_SURGE', 'SURGE_CANDIDATE', 'ELEVATED')
+                        WHERE classification = 'HIGH_PERFORMING'
                         {}
-                        ORDER BY analyzed_at DESC, velocity_ratio DESC NULLS LAST
+                        ORDER BY analyzed_at DESC, current_metric DESC NULLS LAST
                         LIMIT 5
                     """.format("AND platform = %s" if plat_filter else "")
                     await cur.execute(
@@ -615,28 +440,12 @@ async def _retrieve_evidence(
                             })
                     extra["publishing_windows"] = pub_windows
 
-                elif intent == "xgboost":
-                    from app.ml.xgboost_service import get_xgboost_api_status
-                    extra["xgboost_status"] = get_xgboost_api_status()
-                    sql = """
-                        WITH latest AS (
-                            SELECT DISTINCT ON (platform, content_id) classification
-                            FROM ai_suggestions
-                            WHERE classification = ANY(ARRAY['BOOMING_SURGE','SURGE_CANDIDATE','ELEVATED','LOW_PERFORMING'])
-                            ORDER BY platform, content_id, analyzed_at DESC
-                        )
-                        SELECT classification, COUNT(*) AS cnt
-                        FROM latest GROUP BY classification ORDER BY cnt DESC
-                    """
-                    await cur.execute(cast(LiteralString, sql))
-
                 elif intent == "specific_content":
                     sql = """
-                        SELECT platform, content_id, title, classification,
-                               velocity_ratio, like_acceleration, current_metric,
-                               baseline_metric, evidence_reason,
-                               ai_recommendation, structured_analysis,
-                               coverage_hours, llm_status, analyzed_at
+                        SELECT platform, content_id, title, content_type, canonical_url,
+                               classification, current_metric, baseline_metric,
+                               likes, comments, peer_explanation, evidence_reason,
+                               ai_recommendation, structured_analysis, llm_status, analyzed_at
                         FROM ai_suggestions
                         {}
                         ORDER BY analyzed_at DESC
@@ -648,27 +457,27 @@ async def _retrieve_evidence(
                     )
 
                 else:
-                    # platform_overview / total_count / top_content / next action
+                    # platform_overview / default
                     sql = """
                         WITH latest AS (
                             SELECT DISTINCT ON (platform, content_id)
-                                platform, content_id, title, classification,
-                                velocity_ratio, current_metric, evidence_reason,
+                                platform, content_id, title, content_type, canonical_url,
+                                classification, current_metric, baseline_metric,
+                                likes, comments, peer_explanation, evidence_reason,
                                 ai_recommendation, analyzed_at
                             FROM ai_suggestions
-                            WHERE classification IN ('BOOMING_SURGE','SURGE_CANDIDATE','ELEVATED','LOW_PERFORMING')
+                            WHERE classification IN ('HIGH_PERFORMING', 'LOW_PERFORMING')
                             {}
                             ORDER BY platform, content_id, analyzed_at DESC
                         )
                         SELECT * FROM latest
                         ORDER BY
                             CASE classification
-                                WHEN 'BOOMING_SURGE' THEN 1
-                                WHEN 'SURGE_CANDIDATE' THEN 2
-                                WHEN 'LOW_PERFORMING' THEN 3
-                                ELSE 4
+                                WHEN 'HIGH_PERFORMING' THEN 1
+                                WHEN 'LOW_PERFORMING' THEN 2
+                                ELSE 3
                             END,
-                            velocity_ratio DESC NULLS LAST
+                            current_metric DESC NULLS LAST
                         LIMIT 10
                     """.format("AND platform = %s" if plat_filter else "")
                     await cur.execute(
@@ -701,16 +510,39 @@ async def _retrieve_evidence(
 
 def _build_chat_system_prompt() -> str:
     return (
-        "You are an AI assistant for a Tamil media analytics dashboard. "
-        "You answer questions about content performance using ONLY the verified data provided below. "
-        "You MUST NOT invent, fabricate, or extrapolate any metrics, percentages, content titles, "
-        "dates, classifications, causes, or recommendations beyond what is in the supplied evidence. "
-        "If the evidence is insufficient to answer the question, say so explicitly. "
-        "Distinguish clearly between OBSERVED FACTS (from the database) and INTERPRETATION. "
-        "Never claim causation — use language like 'may indicate', 'consistent with', 'observed pattern'. "
-        "Keep responses concise and actionable. Format lists with bullet points where appropriate. "
-        "Do not mention SQL, databases, or internal system details in your response. "
-        "Your audience is the CEO of a media company."
+        "You are a friendly, knowledgeable AI assistant for a media analytics dashboard. "
+        "You help the team understand how their content is performing on YouTube, Instagram, and Facebook.\n\n"
+        "HOW TO RESPOND:\n"
+        "- Be conversational and direct. Answer the question first, then give supporting detail.\n"
+        "- For greetings like 'hi' or 'hello', just say hello back naturally. Do not launch into a data report.\n"
+        "- For 'thanks' or 'goodbye', respond warmly and briefly.\n"
+        "- For analytics questions, give a clear direct answer using the verified data provided.\n"
+        "- For follow-up questions, use the conversation history to understand context.\n\n"
+        "WRITING STYLE:\n"
+        "- Write in plain, natural sentences. No bullet-point overload.\n"
+        "- Do not start every answer with 'Based on verified data...' — just answer.\n"
+        "- Do not use ** markdown bold or * bullet symbols anywhere in your response.\n"
+        "- Do not mention 'records_used', 'provider_status', 'llm_used', 'Source: ai_suggestions', or internal field names.\n"
+        "- Do not add a disclaimer on every single message — only mention data limitations when genuinely relevant.\n"
+        "- If you do not have enough data to answer, say so simply: "
+        "'I don't have enough data for that comparison right now. Try running a fresh scan.'\n\n"
+        "WHEN DISCUSSING ANALYTICS:\n"
+        "- Give specific titles and numbers when available.\n"
+        "- Mention timeframe when relevant.\n"
+        "- Give a recommendation when the user asks what to do.\n"
+        "- Do not claim a cause unless the data actually supports it.\n"
+        "- Distinguish between what the data shows and what might explain it.\n\n"
+        "EXAMPLES OF GOOD RESPONSES:\n"
+        "User: hi\n"
+        "You: Hi! How can I help you?\n\n"
+        "User: which videos are performing best?\n"
+        "You: The strongest-performing videos right now are [list from data]. "
+        "[Title 1] has [X] views and is the top performer in the last 30 days.\n\n"
+        "User: why is the first one doing well?\n"
+        "You: It's performing strongly because [reason from evidence]. "
+        "The engagement rate is also above average, which suggests the audience is responding well to the content.\n\n"
+        "User: what should we do next?\n"
+        "You: Based on the current data, the strongest move would be to [specific recommendation].\n"
     )
 
 
@@ -723,72 +555,87 @@ def _build_chat_user_prompt(
     records = evidence["records"]
     extra = evidence.get("extra", {})
 
-    lines = ["=== VERIFIED EVIDENCE FROM DATABASE ==="]
+    # For casual conversation intents, no evidence context is needed
+    if intent == "casual":
+        lines = []
+        if conversation_history:
+            bounded = conversation_history[-4:]
+            lines.append("=== RECENT CONVERSATION ===")
+            for turn in bounded:
+                role = turn.get("role", "")
+                text = (turn.get("content") or turn.get("text") or "")[:300]
+                if role and text:
+                    lines.append(f"{role.upper()}: {text}")
+            lines.append("")
+        lines.append(f"USER MESSAGE: {question}")
+        lines.append("Respond naturally and conversationally.")
+        return "\n".join(lines)
 
-    if intent == "xgboost":
-        xgb = extra.get("xgboost_status", {})
-        lines.append(f"XGBoost Pipeline Status:")
-        lines.append(f"  data_prerequisites_met: {xgb.get('data_prerequisites_met', False)}")
-        lines.append(f"  model_trained: {xgb.get('model_trained', False)}")
-        lines.append(f"  model_loaded: {xgb.get('model_loaded', False)}")
-        lines.append(f"  prediction_available: {xgb.get('prediction_available', False)}")
-        lines.append(f"  qualification_status: {xgb.get('qualification_status', 'not_loaded')}")
-        lines.append(f"  qualification_reason: {xgb.get('qualification_reason', '')}")
-        lines.append(f"  Note: {xgb.get('note', '')}")
+    lines = ["=== DASHBOARD DATA ==="]
 
-    if not records and intent != "xgboost":
+    if not records:
         lines.append("No matching records found in the current AI Insights dataset.")
-        lines.append("Tell the user to run a fresh AI scan to populate latest data.")
+        lines.append("Tell the user there is no data available yet and suggest running a fresh scan.")
     else:
-        lines.append(f"Records retrieved: {len(records)} ({intent} intent)")
         for i, r in enumerate(records[:8], 1):
-            lines.append(f"\n[{i}] {r.get('title') or r.get('content_id', 'Unknown')}")
-            lines.append(f"    Platform: {r.get('platform', '?')}")
-            lines.append(f"    Classification: {r.get('classification', '?')}")
-            if r.get("velocity_ratio") is not None:
-                lines.append(f"    Velocity ratio: {r['velocity_ratio']:.3f}x")
-            if r.get("like_acceleration") is not None:
-                lines.append(f"    Like acceleration: {r['like_acceleration']:.2f}%")
+            title = r.get('title') or r.get('content_id', 'Unknown')
+            platform = r.get('platform', '?')
+            ctype = r.get('content_type', 'Video')
+            classification = r.get('classification', '?')
+            lines.append(f"\n{i}. {title} ({platform} {ctype})")
+            lines.append(f"   Performance: {classification}")
+            if r.get("canonical_url"):
+                lines.append(f"   Link: {r['canonical_url']}")
+            if r.get("report_period"):
+                lines.append(f"   Period: {r['report_period']}")
             if r.get("current_metric") is not None:
-                lines.append(f"    Current metric: {r['current_metric']:,}")
-            if r.get("baseline_metric") is not None:
-                lines.append(f"    Hourly baseline: {r['baseline_metric']:.3f}")
-            if r.get("coverage_hours") is not None:
-                lines.append(f"    History coverage: {r['coverage_hours']:.1f}h")
-            if r.get("evidence_reason"):
-                lines.append(f"    Evidence: {r['evidence_reason']}")
+                m_label = r.get("metric_name") or "Views/Reach"
+                lines.append(f"   {m_label.capitalize()}: {r['current_metric']:,}")
+            if r.get("likes") is not None:
+                lines.append(f"   Likes: {r['likes']:,}")
+            if r.get("comments") is not None:
+                lines.append(f"   Comments: {r['comments']:,}")
+            if r.get("peer_explanation"):
+                lines.append(f"   Context: {r['peer_explanation']}")
+            if r.get("evidence_reason") and r.get("evidence_reason") != r.get("peer_explanation"):
+                lines.append(f"   Evidence: {r['evidence_reason']}")
             if r.get("ai_recommendation") and r["ai_recommendation"] not in (
                 "Recommendation unavailable",
                 "Recommendation unavailable (validation failed)",
+                "AI insight generation unavailable",
+                "AI insight generation failed",
             ):
-                lines.append(f"    AI Recommendation: {r['ai_recommendation'][:200]}")
+                lines.append(f"   AI Insight: {r['ai_recommendation'][:200]}")
             if r.get("analyzed_at"):
-                lines.append(f"    Last analyzed: {r['analyzed_at']}")
+                lines.append(f"   Last analyzed: {r['analyzed_at']}")
 
     if extra.get("publishing_windows"):
-        lines.append("\n=== OBSERVED PUBLISHING WINDOWS (from history) ===")
+        lines.append("\n=== OBSERVED PUBLISHING WINDOWS ===")
         for pw in extra["publishing_windows"]:
             lines.append(f"Platform: {pw['platform']}")
             for h in pw.get("top_hours", []):
                 lines.append(
-                    f"  Hour {h['hour']:02d}:00 — {h['pct_above_avg']:+.0f}% above avg ({h['n_obs']} observations)"
+                    f"  {h['hour']:02d}:00 — {h['pct_above_avg']:+.0f}% above average ({h['n_obs']} observations)"
                 )
-        lines.append("NOTE: These are OBSERVED historical patterns, NOT predictions of future performance.")
+        lines.append("Note: These are observed patterns from historical data, not predictions.")
 
-    lines.append("\n=== QUESTION ===")
-    lines.append(question)
+    lines.append(f"\n=== QUESTION ===\n{question}")
 
     if conversation_history:
-        # Append last 4 turns of context (bounded)
         bounded = conversation_history[-4:]
-        lines.append("\n=== RECENT CONVERSATION CONTEXT ===")
+        lines.append("\n=== RECENT CONVERSATION ===")
         for turn in bounded:
             role = turn.get("role", "")
             text = (turn.get("content") or turn.get("text") or "")[:300]
             if role and text:
                 lines.append(f"{role.upper()}: {text}")
 
-    lines.append("\nAnswer the question using ONLY the verified evidence above.")
+    lines.append(
+        "\nAnswer the question using only the data above. "
+        "Write in plain, natural language. "
+        "Do not use ** markdown or bullet symbols. "
+        "Do not mention internal field names or database terminology."
+    )
     return "\n".join(lines)
 
 
@@ -836,8 +683,22 @@ async def intelligence_chat(body: ChatRequest):
         intent = _classify_intent(question_safe)
         logger.info("[chat] intent=%s platform=%s question_len=%d", intent, body.platform, len(question))
 
-        # ── 2. Retrieve verified evidence ────────────────────────────────
-        evidence = await _retrieve_evidence(intent, body.platform, question_safe)
+        # ── 2. Retrieve verified evidence (skip for casual conversation) ──
+        if intent == "casual":
+            evidence = {
+                "intent": "casual",
+                "records": [],
+                "extra": {},
+                "record_count": 0,
+            }
+        else:
+            evidence = await _retrieve_evidence(
+                intent,
+                body.platform,
+                question_safe,
+                period=body.period,
+                content_type=body.content_type,
+            )
 
         # ── 3. Build prompts ─────────────────────────────────────────────
         system_prompt = _build_chat_system_prompt()
@@ -909,11 +770,15 @@ async def intelligence_chat(body: ChatRequest):
                 "provider": provider_name,
                 "llm_used": False,
                 "disclaimer": (
-                    "LLM provider currently unavailable. "
-                    "Answer below is derived directly from verified database records without LLM interpretation. "
-                    "Data reflects the last completed AI scan."
-                ),
+                    "AI analysis is temporarily unavailable. "
+                    "The information shown is from verified dashboard records."
+                ) if intent != "casual" else "",
             }
+
+        # For casual conversation, do not add the data disclaimer
+        disclaimer = ""
+        if intent != "casual":
+            disclaimer = "Answer based on verified data from the last AI scan."
 
         return {
             "ok": True,
@@ -924,11 +789,7 @@ async def intelligence_chat(body: ChatRequest):
             "provider_status": "ok",
             "provider": provider_name,
             "llm_used": True,
-            "disclaimer": (
-                "Answer grounded in verified records from the AI Insights database. "
-                "The LLM received only pre-retrieved, verified evidence — it did not access "
-                "the database directly. Data reflects the last completed AI scan."
-            ),
+            "disclaimer": disclaimer,
         }
 
     except HTTPException:
@@ -1073,58 +934,52 @@ async def _call_provider_chat(
 def _build_fallback_answer(evidence: dict) -> str:
     """
     Build a plain-text answer from raw evidence when the LLM is unavailable.
-    This is a structured summary, NOT a canned template — it uses real retrieved data.
+    Uses real retrieved data — not a canned template.
+    No markdown bullets or bold text.
     """
     intent = evidence["intent"]
     records = evidence["records"]
     extra = evidence.get("extra", {})
 
-    if not records and intent != "xgboost":
+    if intent == "casual":
+        return "Hi! I'm here to help with your content performance questions."
+
+    if not records:
         return (
-            "No verified records match this question in the current AI Insights dataset. "
-            "Run a fresh AI scan to populate the latest data."
+            "I don't have any data matching that question right now. "
+            "Try running a fresh AI scan to update the insights."
         )
 
-    lines = ["**AI Insights** (AI reasoning temporarily unavailable — verified dashboard data below):"]
-
-    if intent == "xgboost":
-        xgb = extra.get("xgboost_status", {})
-        lines.append(f"- Data prerequisites met: {xgb.get('data_prerequisites_met', False)}")
-        lines.append(f"- Model trained: {xgb.get('model_trained', False)}")
-        lines.append(f"- Model loaded: {xgb.get('model_loaded', False)}")
-        lines.append(f"- Predictions active: {xgb.get('prediction_available', False)}")
-        lines.append(f"- Status: {xgb.get('qualification_reason', 'Not configured')}")
-        return "\n".join(lines)
+    lines = ["Here is what the dashboard data shows:"]
 
     for r in records[:6]:
         title = r.get("title") or r.get("content_id", "Unknown")
         cls = r.get("classification", "")
         platform = r.get("platform", "")
-        vr = r.get("velocity_ratio")
-        vr_str = f" (velocity {float(vr):.2f}x)" if vr is not None else ""
+        ctype = r.get("content_type", "Video")
+        metric_val = r.get("current_metric")
+        metric_str = f" with {metric_val:,} views" if metric_val is not None else ""
 
-        # Use classification-specific description, not the raw evidence_reason
-        # which can contain stale or contradictory text from a prior scan.
         cls_desc: dict[str, str] = {
-            "BOOMING_SURGE": "🚀 Confirmed surge — receiving strongly above-baseline engagement",
-            "SURGE_CANDIDATE": "📈 Emerging surge signal — above-baseline velocity, still accumulating history",
-            "ELEVATED": "↑ Above-average traction — moderately outperforming baseline",
-            "LOW_PERFORMING": "⚠️ Sub-baseline performance — engagement stalled below historical average",
-            "NOMINAL": "→ Within normal baseline range",
+            "HIGH_PERFORMING": "top performer in the selected period",
+            "LOW_PERFORMING": "underperforming relative to peers in the selected period",
         }
-        desc = cls_desc.get(cls, cls)
-        lines.append(f"- **{title}** [{platform}]{vr_str}")
-        lines.append(f"  {desc}")
+        desc = cls_desc.get(cls, cls.lower().replace("_", " "))
+        lines.append(f"\n{title} ({platform} {ctype}){metric_str} — {desc}.")
 
     if extra.get("publishing_windows"):
-        lines.append("\n**Observed publishing windows:**")
+        lines.append("\nObserved publishing windows:")
         for pw in extra["publishing_windows"]:
             hours_str = ", ".join(
-                f"{h['hour']:02d}:00 (+{h['pct_above_avg']:.0f}%)"
+                f"{h['hour']:02d}:00 (+{h['pct_above_avg']:.0f}% above average)"
                 for h in pw.get("top_hours", [])
             )
-            lines.append(f"- {pw['platform']}: {hours_str}")
-        lines.append("*(Based on actual observed timestamps — not predictions)*")
+            if hours_str:
+                lines.append(f"{pw['platform']}: {hours_str}")
+        lines.append("These are patterns observed from historical data, not predictions.")
 
-    lines.append("\n*Source: ai_suggestions table. Data reflects the last completed AI scan.*")
+    lines.append(
+        "\nNote: AI analysis is temporarily unavailable. "
+        "The figures above are from the last completed scan."
+    )
     return "\n".join(lines)

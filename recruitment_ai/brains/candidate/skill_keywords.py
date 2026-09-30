@@ -12,6 +12,12 @@ SKILL_KEYWORDS = [
     "tensorflow", "pytorch", "machine learning", "deep learning",
     "graphql", "grpc", "kafka", "rabbitmq", "terraform", "ansible",
     "jenkins", "github actions", "ci/cd",
+    # QA / Testing skills
+    "manual testing", "functional testing", "regression testing", "api testing",
+    "automation testing", "selenium", "playwright", "cypress", "jira", "postman",
+    "bugzilla", "sdlc", "stlc", "test cases", "smoke testing", "sanity testing",
+    "uat", "integration testing", "performance testing", "defect tracking",
+    "quality assurance", "jmeter",
     # Soft skills
     "communication", "leadership", "teamwork", "problem solving",
     "adaptability", "adaptable", "time management", "critical thinking",
@@ -48,6 +54,15 @@ SKILL_VARIATIONS = {
     "angular": ["angular", "angularjs", "angular js", "angular.js"],
     # Vue variations
     "vue": ["vue", "vuejs", "vue.js", "vue js"],
+    # QA / Testing variations
+    "manual testing": ["manual testing", "manual test", "manual qa"],
+    "automation testing": ["automation testing", "automated testing", "test automation"],
+    "api testing": ["api testing", "rest api testing", "api automation"],
+    "selenium": ["selenium", "selenium webdriver"],
+    "playwright": ["playwright", "playwright automation"],
+    "jira": ["jira", "atlassian jira"],
+    "postman": ["postman", "postman api"],
+    "quality assurance": ["quality assurance", "qa", "qc", "quality control"],
     # Docker variations
     "docker": ["docker", "containerization"],
     # Kubernetes variations

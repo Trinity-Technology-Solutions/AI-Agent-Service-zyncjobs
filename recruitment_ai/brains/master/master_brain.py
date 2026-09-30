@@ -12,6 +12,7 @@ import logging
 import time
 from recruitment_ai.brains.base import BrainState, BrainResult
 from recruitment_ai.brains.master.intent_classifier import intent_classifier
+from recruitment_ai.config.settings import settings
 from recruitment_ai.brains.master.router import router
 from recruitment_ai.logging.execution_logger import execution_logger
 from recruitment_ai.logging.token_logger import token_logger
@@ -89,7 +90,8 @@ class MasterBrain:
             latency_logger.log_brain_latency(brain.name, elapsed_ms, state)
             latency_logger.log_total_latency(elapsed_ms, state)
             token_logger.log(brain.name, intent, result, state.session.id)
-            cost_logger.log(brain.name, intent, result, state.provider_info.model or state.model or "qwen2.5:3b", state.session.id)
+            state.provider_info.model = state.provider_info.model or settings.BEDROCK_MODEL
+            cost_logger.log(brain.name, intent, result, state.provider_info.model, state.session.id)
             audit_logger.log_response(state, result)
 
         except Exception as e:

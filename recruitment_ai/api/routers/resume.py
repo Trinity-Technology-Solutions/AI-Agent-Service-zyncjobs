@@ -264,7 +264,7 @@ def _regex_fallback(text: str) -> dict:
     if skills_content:
         skills = [
             s.strip().strip(",•·|-–")
-            for s in re.split(r"[,\n•·|/]", skills_content) if 2 < len(s.strip()) < 40
+            for s in re.split(r"[,\n•·|/\t]|\s{2,}", skills_content) if 2 < len(s.strip()) < 40
         ]
         skills = [s for s in skills if s and not re.match(r"^(and|or|the|with|using|etc)$", s, re.I)][:30]
 

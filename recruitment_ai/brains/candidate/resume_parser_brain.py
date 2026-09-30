@@ -90,7 +90,8 @@ class ResumeParserBrain(Brain):
             for pattern, name in SECTION_HEADINGS:
                 # Remove trailing punctuation like :, •, -, –, *, #
                 clean_stripped = re.sub(r'[:•\-–*#]+$', '', stripped).strip()
-                if pattern.match(clean_stripped):
+                # Also handle ALL CAPS headings (e.g. "SKILLS", "EDUCATION")
+                if pattern.match(clean_stripped) or pattern.match(clean_stripped.title()):
                     heading = name
                     break
             if heading:
@@ -438,12 +439,25 @@ class ResumeParserBrain(Brain):
         }
 
     def _classify_education(self, line: str) -> dict:
+        """Parse a single education line into a structured dict with standard field names."""
         is_school = re.search(r"\b(hsc|sslc|10th|12th|higher secondary|secondary school)\b", line, re.IGNORECASE)
         year_match = re.search(r"(\d{4})", line)
         year = year_match.group(1) if year_match else ""
+        # Parse pipe-separated format: "Degree | Institution | Year | Score"
+        parts = [p.strip() for p in line.split("|") if p.strip()]
+        pct_match = re.search(r"(\d{1,3}\.?\d*)\s*%", line)
+        gpa_match = re.search(r"\b(cgpa|gpa)[:\s]*([\d.]+)", line, re.IGNORECASE)
+        gpa_val = gpa_match.group(2) if gpa_match else (pct_match.group(1) + "%" if pct_match else "")
+        if len(parts) >= 2:
+            degree_seg = parts[0] if not re.search(r"\b(university|college|institute|school)\b", parts[0], re.I) else ""
+            school_seg = next((p for p in parts[1:] if not re.match(r"^\d{4}$", p.strip()) and not re.search(r"\d{1,3}%", p)), parts[1])
+            year_seg = next((p for p in parts if re.match(r"^\d{4}$", p.strip())), year)
+            return {"degree": degree_seg, "school": school_seg, "date": year_seg, "gpa": gpa_val}
         if is_school:
-            return {"type": "school", "school": line, "class": "", "year": year, "percentage": ""}
-        return {"type": "college", "college": line, "degree": "", "year": year, "gpa": ""}
+            school_name = re.sub(r"\b(hsc|sslc|10th|12th|higher secondary|secondary school)\b", "", line, flags=re.I).strip(" |-")
+            return {"degree": "HSC" if re.search(r"\b(hsc|12th|higher secondary)\b", line, re.I) else "SSLC",
+                    "school": school_name or line, "date": year, "gpa": gpa_val}
+        return {"degree": "", "school": line.replace(year, "").strip(" |-"), "date": year, "gpa": gpa_val}
 
 
 resume_parser_brain = ResumeParserBrain()

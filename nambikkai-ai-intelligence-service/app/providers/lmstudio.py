@@ -1,7 +1,7 @@
 import json
 import time
 import uuid
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 
@@ -146,10 +146,22 @@ class LMStudioProvider(LLMProvider):
     def __init__(self) -> None:
         self._settings = get_settings()
 
-    async def generate_structured_analysis(self, evidence: EvidencePackage) -> EditorialAnalysis:
+    async def generate_structured_analysis(
+        self,
+        evidence: EvidencePackage,
+        feedback: Optional[str] = None,
+    ) -> EditorialAnalysis:
         settings = self._settings
         request_id = uuid.uuid4().hex[:12]
         user_prompt = _build_user_prompt(evidence)
+        if feedback:
+            user_prompt += (
+                f"\n\n=== CORRECTION FEEDBACK (Previous output failed validation) ===\n"
+                f"{feedback}\n"
+                f"Please regenerate the complete JSON analysis correcting these issues. "
+                f"Adhere strictly to verified evidence, use natural conversational tone, "
+                f"avoid absolute certainty, and ensure all required JSON fields are present."
+            )
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
@@ -294,30 +306,21 @@ class LMStudioProvider(LLMProvider):
                 f"Increase LMSTUDIO_MAX_TOKENS."
             )
 
-        stripped = _strip_fences(raw_content)
-
         try:
-            data = json.loads(stripped)
-        except json.JSONDecodeError as exc:
+            from app.providers.utils import extract_and_normalize_analysis
+            return extract_and_normalize_analysis(raw_content, evidence, request_id)
+        except Exception as exc:
             logger.error(
-                "Model returned invalid JSON",
+                "Model returned invalid output or failed schema",
                 extra={
                     "request_id": request_id,
-                    "json_error": str(exc),
-                    "output_chars": len(stripped),
+                    "error": str(exc),
+                    "output_chars": len(raw_content),
                     "finish_reason": finish_reason,
                 },
             )
             raise ProviderError(
-                f"Model returned invalid JSON (request_id={request_id}): {exc}. "
-                f"finish_reason={finish_reason}, output_chars={len(stripped)}"
-            ) from exc
-
-        try:
-            return EditorialAnalysis(**data)
-        except Exception as exc:
-            raise ProviderError(
-                f"AI output failed schema validation (request_id={request_id}): {exc}"
+                f"AI output failed schema/extraction (request_id={request_id}): {exc}"
             ) from exc
 
     async def health_check(self) -> bool:

@@ -50,7 +50,7 @@ def _normalize_structured_analysis(value):  # noqa: ANN001
 
 def _serialize_suggestion_row(d: dict) -> None:
     """Mutate suggestion dict in place for JSON API responses."""
-    for k in ("scanned_at", "analyzed_at", "updated_at"):
+    for k in ("scanned_at", "analyzed_at", "updated_at", "published_at"):
         if d.get(k) is not None and hasattr(d[k], "isoformat"):
             d[k] = d[k].isoformat()
     if d.get("current_metric") is not None:
@@ -65,12 +65,43 @@ def _serialize_suggestion_row(d: dict) -> None:
         d["structured_analysis"] = _normalize_structured_analysis(d["structured_analysis"])
 
 
+def get_period_days(period: Optional[str]) -> Optional[int]:
+    """Parse authoritative window day count from period label (7d -> 7, 30d -> 30, 90d -> 90)."""
+    if not period:
+        return None
+    p = period.lower().strip()
+    if p in ("7d", "7days", "last_7d", "7_days"):
+        return 7
+    if p in ("30d", "30days", "last_30d", "30_days", "month"):
+        return 30
+    if p in ("90d", "90days", "last_90d", "90_days", "quarter"):
+        return 90
+    return None
+
+
+def _get_canonical_period_label(period: Optional[str]) -> Optional[str]:
+    """Canonicalize a period string to its stored label (7d, 30d, 90d) or None if not a known period."""
+    if not period:
+        return None
+    p = period.lower().strip()
+    if p in ("7d", "7days", "last_7d", "7_days"):
+        return "7d"
+    if p in ("30d", "30days", "last_30d", "30_days", "month"):
+        return "30d"
+    if p in ("90d", "90days", "last_90d", "90_days", "quarter"):
+        return "90d"
+    return None
+
+
 async def _query_suggestions(
     platform: Optional[str],
     classification: Optional[str],
     period: Optional[str],
+    account_key: Optional[str],
+    content_type: Optional[str],
     limit: int,
     offset: int,
+    search: Optional[str] = None,
 ) -> tuple[list[dict], int, dict[str, int]]:
     pool = _get_pool()
 
@@ -81,19 +112,61 @@ async def _query_suggestions(
         base_conditions.append("platform = %s")
         base_params.append(platform.lower().strip())
 
-    if period and period.lower() != "all":
-        base_conditions.append("report_period = %s")
+    # CRITICAL PERIOD ISOLATION FIX:
+    # For known period labels (7d/30d/90d), enforce BOTH:
+    #   1. report_period = requested_period  (ensures we only show records analysed for this period)
+    #   2. published_at within the rolling window  (ensures the source content is actually in scope)
+    # Previously only the published_at window was applied, causing 30d/hourly records to appear in 7d results.
+    canonical_period = _get_canonical_period_label(period)
+    days = get_period_days(period)
+    if canonical_period is not None and days is not None:
+        base_conditions.append("LOWER(report_period) = %s")
+        base_params.append(canonical_period)
+        base_conditions.append(
+            "published_at IS NOT NULL"
+            " AND published_at >= NOW() - (CAST(%s AS text) || ' days')::INTERVAL"
+            " AND published_at <= NOW()"
+        )
+        base_params.append(str(days))
+    elif period and period.lower() != "all":
+        # Unknown period string: fall back to report_period match only
+        base_conditions.append("LOWER(report_period) = %s")
         base_params.append(period.lower().strip())
+
+    if account_key and account_key.lower() != "all":
+        base_conditions.append("account_key = %s")
+        base_params.append(account_key.lower().strip())
+
+    if content_type and content_type.lower() != "all":
+        base_conditions.append("content_type = %s")
+        base_params.append(content_type.strip())
+
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        search_clause = (
+            "("
+            "title ILIKE %s "
+            "OR content_id ILIKE %s "
+            "OR evidence_reason ILIKE %s "
+            "OR peer_explanation ILIKE %s "
+            "OR ai_recommendation ILIKE %s "
+            "OR structured_analysis->>'keyword_suggestions' ILIKE %s "
+            "OR structured_analysis->>'hashtag_suggestions' ILIKE %s"
+            ")"
+        )
+        base_conditions.append(search_clause)
+        base_params.extend([term, term, term, term, term, term, term])
 
     base_where = f"WHERE {' AND '.join(base_conditions)}"
 
-    # 1. Authoritative counts query across active scope
+    # 1. Authoritative counts query across active scope (excludes classification sub-filter only).
+    # DISTINCT ON includes account_key and report_period to avoid collapsing different period/account records.
     counts_sql = f"""
         WITH latest AS (
-            SELECT DISTINCT ON (platform, content_id) classification
+            SELECT DISTINCT ON (account_key, platform, content_id, report_period) classification
             FROM ai_suggestions
             {base_where}
-            ORDER BY platform, content_id, analyzed_at DESC
+            ORDER BY account_key, platform, content_id, report_period, analyzed_at DESC, id DESC
         )
         SELECT classification, COUNT(*)
         FROM latest
@@ -112,18 +185,18 @@ async def _query_suggestions(
 
     items_sql = f"""
         WITH latest AS (
-            SELECT DISTINCT ON (platform, content_id)
+            SELECT DISTINCT ON (account_key, platform, content_id, report_period)
                 id, platform, content_id, account_key, title,
                 content_type, canonical_url, metric_name,
                 classification, current_metric, baseline_metric,
                 likes, comments, peer_explanation,
                 evidence_reason as reason,
                 ai_recommendation, structured_analysis, llm_status,
-                report_period,
+                report_period, published_at,
                 analyzed_at as scanned_at, is_low_performing
             FROM ai_suggestions
             {item_where}
-            ORDER BY platform, content_id, analyzed_at DESC
+            ORDER BY account_key, platform, content_id, report_period, analyzed_at DESC, id DESC
         )
         SELECT * FROM latest
         ORDER BY
@@ -171,13 +244,16 @@ async def get_suggestions(
     platform: Optional[str] = Query(None, description="Filter by platform (youtube|instagram|facebook)"),
     classification: Optional[str] = Query(None, description="Filter by classification (HIGH_PERFORMING|LOW_PERFORMING)"),
     period: Optional[str] = Query(None, description="Filter by report period (7d|30d|90d)"),
+    account_key: Optional[str] = Query(None, description="Filter by account key (e.g. nambikkai-media)"),
+    content_type: Optional[str] = Query(None, description="Filter by content type (e.g. YouTube Short, Instagram Reel)"),
+    search: Optional[str] = Query(None, description="Search by title, content_id, or keywords"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
     """Return all persisted AI performance insights with authoritative counts."""
     try:
         rows, total, counts_by_classification = await _query_suggestions(
-            platform, classification, period, limit, offset
+            platform, classification, period, account_key, content_type, limit, offset, search
         )
         for row in rows:
             _serialize_suggestion_row(row)
@@ -197,6 +273,7 @@ async def get_suggestions(
     except Exception as exc:
         logger.error("[/suggestions] Error: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to fetch suggestions.")
+
 
 
 @router.get("/notifications")
@@ -262,27 +339,42 @@ async def get_suggestion_by_content(
         conditions = ["content_id = %s", "classification = ANY(%s)"]
         params: list[Any] = [content_id, ACTIONABLE_CLASSIFICATIONS]
         if period:
-            conditions.append("LOWER(report_period) = %s")
-            params.append(period.lower().strip())
+            canonical_p = _get_canonical_period_label(period)
+            days = get_period_days(period)
+            if canonical_p is not None and days is not None:
+                # Enforce both report_period and published_at window for known periods
+                conditions.append("LOWER(report_period) = %s")
+                params.append(canonical_p)
+                conditions.append(
+                    "published_at IS NOT NULL"
+                    " AND published_at >= NOW() - (CAST(%s AS text) || ' days')::INTERVAL"
+                    " AND published_at <= NOW()"
+                )
+                params.append(str(days))
+            else:
+                conditions.append("LOWER(report_period) = %s")
+                params.append(period.lower().strip())
         where_clause = " AND ".join(conditions)
+
+        content_sql = f"""
+            SELECT id, platform, content_id, account_key, title,
+                   content_type, canonical_url, metric_name,
+                   classification, current_metric, baseline_metric,
+                   likes, comments, peer_explanation,
+                   evidence_reason as reason,
+                   ai_recommendation, structured_analysis, llm_status,
+                   report_period, published_at,
+                   analyzed_at as scanned_at, is_low_performing
+            FROM ai_suggestions
+            WHERE {where_clause}
+            ORDER BY analyzed_at DESC
+            LIMIT 1
+        """
 
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    f"""
-                    SELECT id, platform, content_id, account_key, title,
-                           content_type, canonical_url, metric_name,
-                           classification, current_metric, baseline_metric,
-                           likes, comments, peer_explanation,
-                           evidence_reason as reason,
-                           ai_recommendation, structured_analysis, llm_status,
-                           report_period,
-                           analyzed_at as scanned_at, is_low_performing
-                    FROM ai_suggestions
-                    WHERE {where_clause}
-                    ORDER BY analyzed_at DESC
-                    LIMIT 1
-                    """,
+                    cast(LiteralString, content_sql),
                     params,
                 )
                 row = await cur.fetchone()
@@ -314,7 +406,7 @@ async def get_suggestion(platform: str, content_id: str):
                            likes, comments, peer_explanation,
                            evidence_reason as reason,
                            ai_recommendation, structured_analysis, llm_status,
-                           report_period,
+                           report_period, published_at,
                            analyzed_at as scanned_at, is_low_performing
                     FROM ai_suggestions
                     WHERE platform = %s AND content_id = %s

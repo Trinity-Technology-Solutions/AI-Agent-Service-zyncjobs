@@ -3,7 +3,7 @@ import json
 import os
 import time
 import uuid
-from typing import Any
+from typing import Any, Optional
 
 import boto3
 from botocore.config import Config
@@ -69,10 +69,22 @@ class BedrockProvider(LLMProvider):
             return f"global.{model_id}"
         return model_id
 
-    async def generate_structured_analysis(self, evidence: EvidencePackage) -> EditorialAnalysis:
+    async def generate_structured_analysis(
+        self,
+        evidence: EvidencePackage,
+        feedback: Optional[str] = None,
+    ) -> EditorialAnalysis:
         settings = self._settings
         request_id = uuid.uuid4().hex[:12]
         user_prompt = _build_user_prompt(evidence)
+        if feedback:
+            user_prompt += (
+                f"\n\n=== CORRECTION FEEDBACK (Previous output failed validation) ===\n"
+                f"{feedback}\n"
+                f"Please regenerate the complete JSON analysis correcting these issues. "
+                f"Adhere strictly to verified evidence, use natural conversational tone, "
+                f"avoid absolute certainty, and ensure all required JSON fields are present."
+            )
         input_chars = len(_SYSTEM_PROMPT) + len(user_prompt)
         effective_model_id = self._get_effective_model_id()
 
@@ -142,7 +154,7 @@ class BedrockProvider(LLMProvider):
 
         duration_ms = int((time.monotonic() - t_start) * 1000)
 
-        # ── Parse Converse response ────────────────────────────────────────
+        # Parse Converse response
         try:
             stop_reason = response.get("stopReason")
             usage = response.get("usage", {})
@@ -172,30 +184,20 @@ class BedrockProvider(LLMProvider):
                 f"Increase BEDROCK_MAX_TOKENS."
             )
 
-        stripped = _strip_fences(raw_content)
-
         try:
-            data = json.loads(stripped)
-        except json.JSONDecodeError as exc:
+            from app.providers.utils import extract_and_normalize_analysis
+            return extract_and_normalize_analysis(raw_content, evidence, request_id)
+        except Exception as exc:
             logger.error(
-                "Bedrock model returned invalid JSON",
+                "Bedrock model returned invalid output or failed schema",
                 extra={
                     "request_id": request_id,
-                    "json_error": str(exc),
-                    "output_chars": len(stripped),
+                    "error": str(exc),
                     "stop_reason": stop_reason,
                 },
             )
             raise ProviderError(
-                f"Bedrock model returned invalid JSON (request_id={request_id}): {exc}. "
-                f"stop_reason={stop_reason}, output_chars={len(stripped)}"
-            ) from exc
-
-        try:
-            return EditorialAnalysis(**data)
-        except Exception as exc:
-            raise ProviderError(
-                f"Bedrock AI output failed schema validation (request_id={request_id}): {exc}"
+                f"Bedrock AI output failed schema/extraction (request_id={request_id}): {exc}"
             ) from exc
 
     async def health_check(self) -> bool:

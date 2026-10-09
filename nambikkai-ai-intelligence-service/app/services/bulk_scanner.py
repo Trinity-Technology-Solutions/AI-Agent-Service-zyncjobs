@@ -17,6 +17,8 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any, List, Optional, cast
+import re
+from datetime import datetime, timezone
 
 from psycopg.types.json import Jsonb
 
@@ -42,7 +44,7 @@ INSERT INTO ai_suggestions (
     likes, comments, peer_explanation,
     evidence_reason, ai_recommendation,
     structured_analysis, llm_status,
-    report_period, is_low_performing, analyzed_at
+    report_period, is_low_performing, published_at, analyzed_at
 ) VALUES (
     %(platform)s, %(content_id)s, %(account_key)s,
     %(title)s, %(content_type)s, %(canonical_url)s, %(metric_name)s,
@@ -50,13 +52,16 @@ INSERT INTO ai_suggestions (
     %(likes)s, %(comments)s, %(peer_explanation)s,
     %(evidence_reason)s, %(ai_recommendation)s,
     %(structured_analysis)s, %(llm_status)s,
-    %(report_period)s, %(is_low_performing)s, NOW()
+    %(report_period)s, %(is_low_performing)s, %(published_at)s, NOW()
 )
 ON CONFLICT (platform, content_id, report_period) DO UPDATE SET
     account_key = EXCLUDED.account_key,
     title = EXCLUDED.title,
     content_type = EXCLUDED.content_type,
-    canonical_url = EXCLUDED.canonical_url,
+    canonical_url = CASE
+        WHEN EXCLUDED.canonical_url IS NOT NULL AND EXCLUDED.canonical_url != '' THEN EXCLUDED.canonical_url
+        ELSE ai_suggestions.canonical_url
+    END,
     metric_name = EXCLUDED.metric_name,
     classification = EXCLUDED.classification,
     current_metric = EXCLUDED.current_metric,
@@ -69,6 +74,7 @@ ON CONFLICT (platform, content_id, report_period) DO UPDATE SET
     structured_analysis = EXCLUDED.structured_analysis,
     llm_status = EXCLUDED.llm_status,
     is_low_performing = EXCLUDED.is_low_performing,
+    published_at = COALESCE(EXCLUDED.published_at, ai_suggestions.published_at),
     analyzed_at = NOW();
 """
 
@@ -92,18 +98,34 @@ class ScanSummary:
 def clean_canonical_url(url: str, platform: str, content_id: str, content_type: str = "") -> str:
     raw = (url or "").strip()
     is_cdn = any(cdn in raw.lower() for cdn in [
-        "fbcdn.net", "cdninstagram.com", "akamaihd.net", "fbsbx.com", "cdn.", ".fbcdn."
-    ]) or any(raw.lower().endswith(ext) for ext in [".mp4", ".jpg", ".jpeg", ".png", ".webp"])
+        "fbcdn.net", "cdninstagram.com", "akamaihd.net", "fbsbx.com", "cdn.", ".fbcdn.",
+        "googlevideo.com", "ytimg.com"
+    ]) or any(raw.lower().endswith(ext) for ext in [".mp4", ".m4v", ".webm", ".jpg", ".jpeg", ".png", ".webp"])
 
-    if not raw or is_cdn:
-        p = platform.lower()
-        ct = content_type.lower()
-        if p == "youtube":
-            return f"https://www.youtube.com/shorts/{content_id}" if "short" in ct else f"https://www.youtube.com/watch?v={content_id}"
-        elif p == "instagram":
-            return f"https://www.instagram.com/reel/{content_id}/" if "reel" in ct else f"https://www.instagram.com/p/{content_id}/"
-        elif p == "facebook":
-            return f"https://www.facebook.com/{content_id}"
+    if is_cdn:
+        raw = ""
+
+    p = (platform or "").lower()
+    ct = (content_type or "").lower()
+    cid = (content_id or "").strip()
+
+    if p == "youtube":
+        if raw and ("youtube.com" in raw or "youtu.be" in raw):
+            return raw
+        if cid:
+            return f"https://www.youtube.com/shorts/{cid}" if "short" in ct else f"https://www.youtube.com/watch?v={cid}"
+        return ""
+    elif p == "instagram":
+        # Accept only authentic Instagram permalinks with shortcode
+        # NEVER construct /reel/{id} from numeric media_id!
+        if raw and "instagram.com" in raw:
+            if not re.search(r'/(?:reel|p)/\d{10,}/?', raw):
+                return raw
+        return ""
+    elif p == "facebook":
+        if raw and "facebook.com" in raw and not is_cdn:
+            return raw
+        return ""
     return raw
 
 
@@ -211,6 +233,17 @@ async def scan_with_candidates(
 
             is_low = perf_level == "LOW_PERFORMING"
 
+            pub_raw = cand.get("published_at")
+            pub_dt = None
+            if pub_raw:
+                if isinstance(pub_raw, datetime):
+                    pub_dt = pub_raw
+                elif isinstance(pub_raw, str):
+                    try:
+                        pub_dt = datetime.fromisoformat(pub_raw.replace("Z", "+00:00"))
+                    except Exception:
+                        pub_dt = None
+
             base_row: dict[str, Any] = {
                 "platform": platform,
                 "content_id": content_id,
@@ -228,6 +261,7 @@ async def scan_with_candidates(
                 "evidence_reason": peer_explanation or f"Authoritative {perf_level} from dashboard",
                 "report_period": period,
                 "is_low_performing": is_low,
+                "published_at": pub_dt,
                 "ai_recommendation": None,
                 "structured_analysis": cast(Any, None),
                 "llm_status": None,
@@ -244,7 +278,7 @@ async def scan_with_candidates(
 
             # LLM provider unavailable
             if provider is None:
-                base_row["ai_recommendation"] = "AI insight generation unavailable (LLM unconfigured or unreachable)"
+                base_row["ai_recommendation"] = "AI recommendation temporarily unavailable (LLM unconfigured or unreachable) — verified performance metrics are intact."
                 base_row["structured_analysis"] = None
                 base_row["llm_status"] = "unavailable"
                 return content_id, base_row
@@ -261,7 +295,7 @@ async def scan_with_candidates(
                         title=title,
                         url=canonical_url,
                         canonical_url=canonical_url,
-                        published_at=str(cand.get("published_at")) if cand.get("published_at") else None,
+                        published_at=str(pub_raw) if pub_raw else None,
                         period=period,
                         current_metric=float(curr_val),
                         baseline_metric=base_val,
@@ -298,42 +332,80 @@ async def scan_with_candidates(
                     if analysis is not None:
                         out_val = validate_output(analysis, evidence)
                         pol_val = validate_policy(analysis)
+
+                        # Bounded retry if initial validation failed (at most 1 retry with actual feedback)
+                        if not out_val.is_valid or not pol_val.is_valid:
+                            first_failures = out_val.failures + pol_val.failures
+                            feedback = "; ".join(first_failures)
+                            logger.info(
+                                "[CandidateScan] Initial validation failed for %s/%s (%s). Attempting bounded retry with feedback...",
+                                platform, content_id, feedback,
+                            )
+                            try:
+                                retry_analysis = await provider.generate_structured_analysis(evidence, feedback=feedback)
+                                retry_out = validate_output(retry_analysis, evidence)
+                                retry_pol = validate_policy(retry_analysis)
+                                if retry_out.is_valid and retry_pol.is_valid:
+                                    logger.info("[CandidateScan] Bounded retry succeeded for %s/%s", platform, content_id)
+                                    analysis = retry_analysis
+                                    out_val = retry_out
+                                    pol_val = retry_pol
+                                else:
+                                    logger.warning(
+                                        "[CandidateScan] Bounded retry also failed for %s/%s: %s",
+                                        platform, content_id, "; ".join(retry_out.failures + retry_pol.failures),
+                                    )
+                            except Exception as retry_exc:
+                                logger.warning("[CandidateScan] Bounded retry encountered error for %s/%s: %s", platform, content_id, retry_exc)
+
                         if not out_val.is_valid or not pol_val.is_valid:
                             failures = out_val.failures + pol_val.failures
                             logger.warning(
                                 "[CandidateScan] Validation failed for %s/%s: %s",
                                 platform, content_id, "; ".join(failures),
                             )
-                            base_row["ai_recommendation"] = "AI insight validation failed"
-                            base_row["structured_analysis"] = None
+                            base_row["ai_recommendation"] = "AI recommendation temporarily unavailable — verified performance metrics are intact."
+                            base_row["structured_analysis"] = Jsonb({
+                                "validation_error": True,
+                                "reasons": failures,
+                                "diagnostic_status": "failed_validation",
+                            })
                             base_row["llm_status"] = "failed_validation"
                         else:
                             rec = analysis.recommended_action or (
                                 analysis.writer_recommendations[0]
                                 if analysis.writer_recommendations
-                                else "No specific recommendation generated"
+                                else "Follow up on this topic while audience interest is active."
                             )
                             base_row["ai_recommendation"] = rec
                             base_row["structured_analysis"] = Jsonb(analysis.model_dump())
                             base_row["llm_status"] = "generated"
                     else:
-                        base_row["ai_recommendation"] = "AI insight generation unavailable"
+                        base_row["ai_recommendation"] = "AI recommendation temporarily unavailable — verified performance metrics are intact."
                         base_row["structured_analysis"] = None
                         base_row["llm_status"] = "unavailable"
 
                 except ProviderUnavailableError:
-                    base_row["ai_recommendation"] = "AI insight generation unavailable (LLM unreachable)"
+                    base_row["ai_recommendation"] = "AI recommendation temporarily unavailable (LLM unreachable) — verified performance metrics are intact."
                     base_row["structured_analysis"] = None
                     base_row["llm_status"] = "unavailable"
                 except ProviderError as p_err:
                     logger.warning("[CandidateScan] Provider error generating insight for %s/%s: %s", platform, content_id, p_err)
-                    base_row["ai_recommendation"] = "AI insight generation failed"
-                    base_row["structured_analysis"] = None
+                    base_row["ai_recommendation"] = "AI recommendation temporarily unavailable — verified performance metrics are intact."
+                    base_row["structured_analysis"] = Jsonb({
+                        "provider_error": True,
+                        "reasons": [str(p_err)],
+                        "diagnostic_status": "failed",
+                    })
                     base_row["llm_status"] = "failed"
                 except Exception as exc:
                     logger.error("[CandidateScan] Unexpected error generating insight for %s/%s: %s", platform, content_id, exc)
-                    base_row["ai_recommendation"] = "AI insight generation failed"
-                    base_row["structured_analysis"] = None
+                    base_row["ai_recommendation"] = "AI recommendation temporarily unavailable — verified performance metrics are intact."
+                    base_row["structured_analysis"] = Jsonb({
+                        "error": True,
+                        "reasons": [str(exc)],
+                        "diagnostic_status": "failed",
+                    })
                     base_row["llm_status"] = "failed"
 
             return content_id, base_row
@@ -342,7 +414,7 @@ async def scan_with_candidates(
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for res in results:
-            if isinstance(res, Exception):
+            if isinstance(res, BaseException):
                 logger.error("[CandidateScan] Error in candidate processing: %s", res)
                 summary.errors += 1
                 continue

@@ -2,6 +2,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, Any
+import re
 from pydantic import BaseModel, Field
 
 
@@ -50,18 +51,28 @@ class PerformanceCandidate(BaseModel):
     def effective_url(self) -> Optional[str]:
         raw = (self.canonical_url or self.url or "").strip()
         is_cdn = any(cdn in raw.lower() for cdn in [
-            "fbcdn.net", "cdninstagram.com", "akamaihd.net", "fbsbx.com", "cdn.", ".fbcdn."
-        ]) or any(raw.lower().endswith(ext) for ext in [".mp4", ".jpg", ".jpeg", ".png", ".webp"])
-        if is_cdn or not raw:
-            p = (self.platform or "").lower()
-            ct = (self.content_type or "").lower()
-            cid = self.content_id
-            if p == "youtube":
+            "fbcdn.net", "cdninstagram.com", "akamaihd.net", "fbsbx.com", "cdn.", ".fbcdn.",
+            "googlevideo.com", "ytimg.com"
+        ]) or any(raw.lower().endswith(ext) for ext in [".mp4", ".m4v", ".webm", ".jpg", ".jpeg", ".png", ".webp"])
+        if is_cdn:
+            raw = ""
+        p = (self.platform or "").lower()
+        ct = (self.content_type or "").lower()
+        cid = (self.content_id or "").strip()
+        if p == "youtube":
+            if raw and ("youtube.com" in raw or "youtu.be" in raw):
+                return raw
+            if cid:
                 return f"https://www.youtube.com/shorts/{cid}" if "short" in ct else f"https://www.youtube.com/watch?v={cid}"
-            elif p == "instagram":
-                return f"https://www.instagram.com/reel/{cid}/" if "reel" in ct else f"https://www.instagram.com/p/{cid}/"
-            elif p == "facebook":
-                return f"https://www.facebook.com/{cid}"
+            return None
+        elif p == "instagram":
+            if raw and "instagram.com" in raw and not re.search(r'/(?:reel|p)/\d{10,}/?', raw):
+                return raw
+            return None
+        elif p == "facebook":
+            if raw and "facebook.com" in raw:
+                return raw
+            return None
         return raw or None
 
 

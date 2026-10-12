@@ -465,8 +465,15 @@ Answer using the Employer Context. Ground your answer in the real company, jobs,
         job_data = context.get("job") or prefs.get("job") or {}
         job_desc = job_data.get("description") or job_data.get("jobDescription") or state.context_data.job.description or ""
         job_skills = job_data.get("skills") or state.context_data.job.skills or []
+        job_experience_level = job_data.get("experienceLevel") or job_data.get("experience_level") or ""
+        job_experience_range = job_data.get("experienceRange") or job_data.get("experience_range") or job_data.get("experience") or ""
         if isinstance(job_skills, list) and job_skills:
             job_desc = f"{job_desc}\n\nRequired Skills: {', '.join(str(s) for s in job_skills if s)}".strip()
+        experience_requirement = ", ".join(
+            str(value).strip() for value in (job_experience_level, job_experience_range) if value
+        )
+        if experience_requirement:
+            job_desc = f"{job_desc}\n\nRequired Experience: {experience_requirement}".strip()
 
         candidates = context.get("candidates") or []
         if not isinstance(candidates, list) or not candidates:
@@ -536,7 +543,10 @@ Return JSON:
                 raise ValueError("LLM returned no ranked list")
         except Exception as e:
             logger.warning("LLM ranking failed (%s) — using deterministic scoring", e)
-            ranked = [self._deterministic_score(c, job_skills_list) for c in candidates_resume]
+            ranked = [
+                self._deterministic_score(c, job_skills_list, job_experience_level, job_experience_range)
+                for c in candidates_resume
+            ]
 
         ranked = [r for r in ranked if isinstance(r, dict)]
         for r in ranked:
@@ -551,7 +561,13 @@ Return JSON:
             execution_time=time.perf_counter() - start,
         )
 
-    def _deterministic_score(self, candidate: dict, job_skills: list) -> dict:
+    def _deterministic_score(
+        self,
+        candidate: dict,
+        job_skills: list,
+        job_experience_level: str = "",
+        job_experience_range: str = "",
+    ) -> dict:
         """Rule-based fallback scoring so the rank endpoint never returns empty when the LLM fails."""
         name = candidate.get("name") or candidate.get("fullName") or "Candidate"
 
@@ -596,8 +612,17 @@ Return JSON:
         exp_raw = candidate.get("yearsExp") or candidate.get("experience")
         cand_years = _years(exp_raw) if not isinstance(exp_raw, (int, float)) else float(exp_raw or 0)
         has_exp = bool(exp_raw)
-        required_map = {"Entry": 0, "Mid": 2, "Senior": 5, "Lead": 8}
-        required_years = required_map.get(str(candidate.get("experienceLevel") or "").title(), 2)
+        required_map = {"entry": 0, "junior": 1, "mid": 2, "intermediate": 2, "senior": 5, "lead": 8, "executive": 8}
+        required_years = required_map.get(str(job_experience_level or "mid").strip().lower(), 2)
+        range_match = re.search(r"(\d+)\s*(?:-|to)\s*(\d+)\s*(?:\+\s*)?(?:years?|yrs?)?", str(job_experience_range or ""), re.I)
+        plus_match = re.search(r"(\d+)\s*\+\s*(?:years?|yrs?)?", str(job_experience_range or ""), re.I)
+        single_match = re.search(r"(\d+)\s*(?:years?|yrs?)", str(job_experience_range or ""), re.I)
+        if range_match:
+            required_years = float(range_match.group(1))
+        elif plus_match:
+            required_years = float(plus_match.group(1))
+        elif single_match:
+            required_years = float(single_match.group(1))
         if required_years == 0:
             exp_score = 85
         elif not has_exp:

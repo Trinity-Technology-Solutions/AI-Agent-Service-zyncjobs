@@ -47,6 +47,7 @@ class ResumeParserBrain(Brain):
             ), timeout=45)
             parsed = validate_json_strict(raw, "object") or {}
             parsed = await self._enrich_detail_sections(parsed, content)
+            parsed = self._recover_source_sections(parsed, content)
             data, confidence = self._validate_and_score(parsed, content)
             
             return BrainResult(
@@ -125,6 +126,79 @@ class ResumeParserBrain(Brain):
             parsed["parserWarnings"] = list(dict.fromkeys(warnings))
         return parsed
 
+    def _recover_source_sections(self, parsed: dict, content: str) -> dict:
+        """Recover simple, explicitly formatted fields from source text before validation."""
+        result = dict(parsed)
+        labeled = self._section_label_text(content)
+        parts = re.split(r"(?m)^\[([A-Z]+)\]\s*$", labeled)
+        sections = {}
+        for index in range(1, len(parts) - 1, 2):
+            sections[parts[index]] = sections.get(parts[index], "") + "\n" + parts[index + 1]
+
+        def add_record(key, record, identity_fields):
+            records = list(result.get(key) or [])
+            identity = " ".join(str(record.get(field) or "").strip().lower() for field in identity_fields)
+            def same_record(old):
+                if not isinstance(old, dict):
+                    return False
+                if key == "educations":
+                    same_degree = bool(record.get("degree") and old.get("degree") and str(record["degree"]).strip().lower() == str(old["degree"]).strip().lower())
+                    same_school = bool(record.get("school") and old.get("school") and str(record["school"]).strip().lower() == str(old["school"]).strip().lower())
+                    return same_degree or same_school
+                return " ".join(str(old.get(field) or "").strip().lower() for field in identity_fields) == identity
+            old_index = next((i for i, old in enumerate(records) if same_record(old)), None)
+            if old_index is None:
+                records.append(record)
+            else:
+                old = dict(records[old_index])
+                for field, value in record.items():
+                    if value not in (None, "", []):
+                        if field == "descriptions":
+                            old[field] = list(dict.fromkeys(list(old.get(field) or []) + list(value)))
+                        elif not old.get(field) or (field == "school" and str(old[field]).strip().lower() in {"university", "college", "school", "institution"}):
+                            old[field] = value
+                records[old_index] = old
+            result[key] = records
+
+        for line in sections.get("EDUCATION", "").splitlines():
+            fields = [part.strip() for part in line.split("|")]
+            if len(fields) < 2:
+                continue
+            first = fields[0]
+            if not re.search(r"\b(b\.?sc|m\.?sc|b\.?tech|m\.?tech|b\.?e|m\.?e|bachelor|master|mba|bca|mca|hsc|sslc|10th|12th)\b", first, re.I):
+                continue
+            institution = next((field for field in fields[1:] if re.search(r"\b(university|college|institute|school|academy)\b", field, re.I) and not re.fullmatch(r"university|college|school|institution", field, re.I)), "")
+            year = next((field for field in fields if re.fullmatch(r"(?:19|20)\d{2}", field)), "")
+            score = next((field for field in fields if re.search(r"\d+(?:\.\d+)?\s*%|\b(?:cgpa|gpa)\s*:?\s*\d+(?:\.\d+)?", field, re.I)), "")
+            if institution or first:
+                add_record("educations", {"degree": first, "school": institution, "date": year, "gpa": score}, ("degree", "school"))
+
+        for line in sections.get("EXPERIENCE", "").splitlines():
+            fields = [part.strip() for part in line.split("|") if part.strip()]
+            if len(fields) < 2 or not re.search(r"\b(engineer|developer|analyst|manager|designer|tester|consultant|intern|specialist|administrator|qa|recruiter)\b", fields[0], re.I):
+                continue
+            date_index = next((i for i, field in enumerate(fields) if re.search(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4}|\b(?:19|20)\d{2}\b", field, re.I)), -1)
+            date = fields[date_index] if date_index >= 0 else ""
+            location = fields[2] if len(fields) > 2 and (date_index < 0 or date_index > 2) else ""
+            add_record("workExperiences", {"jobTitle": fields[0], "company": fields[1], "location": location, "date": date, "descriptions": []}, ("jobTitle", "company"))
+
+        skills = result.get("skills") if isinstance(result.get("skills"), list) else []
+        skills += [value.strip(" •\t") for value in re.split(r"[,;|\n]+", sections.get("SKILLS", "")) if value.strip(" •\t")]
+        result["skills"] = list(dict.fromkeys(value for value in skills if isinstance(value, str) and len(value.strip()) > 1))
+
+        project_lines = [line.strip(" •\t") for line in sections.get("PROJECTS", "").splitlines() if line.strip(" •\t")]
+        for line in project_lines:
+            match = re.match(r"(?:tested|built|developed|created|designed|implemented|deployed)\s+(?:a|an|the)?\s*([^,.]+?)(?:\s+(?:covering|for|using|with|to)\b|[,.;]|$)", line, re.I)
+            if match:
+                add_record("projects", {"name": match.group(1).strip(), "descriptions": [line]}, ("name",))
+            elif len(line.split()) <= 10 and not line.endswith((".", ",")):
+                add_record("projects", {"name": line, "descriptions": []}, ("name",))
+            elif result.get("projects"):
+                existing = result["projects"][-1]
+                if isinstance(existing, dict):
+                    existing["descriptions"] = list(dict.fromkeys(list(existing.get("descriptions") or []) + [line]))
+        return result
+
     def _section_label_text(self, text: str) -> str:
         """Label resume sections like the backend does for better LLM parsing."""
         # Section headings — anchored (full-line)
@@ -182,21 +256,28 @@ class ResumeParserBrain(Brain):
         return '\n\n'.join(parts)
 
     def _is_resume(self, content: str) -> bool:
-        """Return True only if content has enough resume signals to be worth parsing."""
+        """Accept contact-led resumes and structured builder exports without contact lines."""
         text = content.lower()
-        # Must have at least one contact signal (email or phone)
         has_contact = bool(
             re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", content) or
             re.search(r"(?:\+\d{1,3}[\s\-]?)?\d[\d\s\-\.\(\)]{8,}\d", content)
         )
-        # Must have at least 2 of these resume section keywords
         section_keywords = [
             "experience", "education", "skill", "summary", "objective",
             "profile", "certification", "project", "internship",
             "employment", "qualification", "achievement",
         ]
         section_hits = sum(1 for kw in section_keywords if kw in text)
-        return has_contact and section_hits >= 2
+        # Builder resumes can omit contact data, but should still be parseable so
+        # the parser can recover their profile sections. Require several distinct
+        # resume signals and real content to avoid accepting arbitrary documents.
+        has_resume_detail = bool(
+            re.search(r"\b(19|20)\d{2}\b", content) or
+            re.search(r"\b(b\.?tech|bachelor|master|diploma|university|college|school)\b", text) or
+            len(re.findall(r"(?m)^\s*[•*-]\s+", content)) >= 2
+        )
+        structured_resume = section_hits >= 4 and len(content.split()) >= 30 and has_resume_detail
+        return (has_contact and section_hits >= 2) or structured_resume
 
     def _strict_sanitize(self, value: str, field_type: str) -> str:
         return clean_field(value, field_type)

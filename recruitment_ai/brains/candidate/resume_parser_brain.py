@@ -203,11 +203,11 @@ class ResumeParserBrain(Brain):
         """Label resume sections like the backend does for better LLM parsing."""
         # Section headings — anchored (full-line)
         SECTION_HEADINGS = [
-            (re.compile(r'^(summary|professional summary|profile|career summary|objective|career objective|about me|personal profile)$', re.I), 'SUMMARY'),
+            (re.compile(r'^(summary|professional summary|profile summary|profile|career summary|objective|career objective|about me|personal profile)$', re.I), 'SUMMARY'),
             (re.compile(r'^(work experience|professional experience|experience|employment history|work history|employment|career history|work)$', re.I), 'EXPERIENCE'),
             (re.compile(r'^(internships?|internship experience|internship training|industrial training|industrial experience|training|teaching experience)$', re.I), 'INTERNSHIPS'),
             (re.compile(r'^(education|academic qualifications?|academic background|academic details|qualifications?|educational qualification)$', re.I), 'EDUCATION'),
-            (re.compile(r'^(technical skills|skills|skills summary|core skills|key skills|technologies|tech stack|skills[\s&/]+technologies)$', re.I), 'SKILLS'),
+            (re.compile(r'^(technical skills|skills|skills summary|core skills|key skills|strengths|technologies|tech stack|skills[\s&/]+technologies)$', re.I), 'SKILLS'),
             (re.compile(r'^(projects?|academic projects?|personal projects?|major projects?|technical projects?|key projects?|project experience|project work)$', re.I), 'PROJECTS'),
             (re.compile(r'^(certifications?|licenses?|licences?|certificates|courses?|certifications? and courses|certifications? & courses|courses? and certifications?|courses? & certifications?|certifications? / courses|professional certifications?|professional development)$', re.I), 'CERTIFICATIONS'),
             (re.compile(r'^(languages|language proficiency|language skills)$', re.I), 'LANGUAGES'),

@@ -23,6 +23,73 @@ router = APIRouter(prefix="/ai/resume", tags=["resume"])
 # Optional auth — allows unauthenticated requests (token fetch may fail on frontend)
 _optional_bearer = HTTPBearer(auto_error=False)
 
+
+def _merge_resume_lists(primary, fallback, key):
+    """Merge independent parser results without duplicating the same resume entry."""
+    if key in {"skills", "softSkills", "tools", "languages", "awards", "competitions"}:
+        values = []
+        seen = set()
+        for value in list(primary or []) + list(fallback or []):
+            if isinstance(value, dict):
+                value = value.get("skill") or value.get("name") or value.get("label") or ""
+            if not isinstance(value, str) or not value.strip():
+                continue
+            marker = " ".join(value.split()).casefold()
+            if marker not in seen:
+                seen.add(marker)
+                values.append(value.strip())
+        return values
+
+    identity_fields = {
+        "educations": ("degree", "school"),
+        "workExperiences": ("jobTitle", "company"),
+        "internships": ("jobTitle", "company"),
+        "projects": ("name",),
+        "certifications": ("name", "provider"),
+    }.get(key, ("name",))
+    merged = [dict(item) if isinstance(item, dict) else item for item in (primary or [])]
+
+    def identity(item):
+        if not isinstance(item, dict):
+            return str(item).strip().casefold() if item else ""
+        values = [" ".join(str(item.get(field) or "").split()).casefold() for field in identity_fields]
+        if not any(values):
+            return ""
+        if key == "educations" and not all(values):
+            return next((value for value in values if value), "")
+        return "|".join(values).strip("|")
+
+    for item in fallback or []:
+        if not isinstance(item, dict):
+            if item and identity(item) not in {identity(old) for old in merged}:
+                merged.append(item)
+            continue
+        marker = identity(item)
+        if not marker:
+            continue
+        match_index = next((i for i, old in enumerate(merged) if identity(old) == marker), None)
+        if match_index is None:
+            merged.append(dict(item))
+            continue
+        old = merged[match_index] if isinstance(merged[match_index], dict) else {}
+        combined = dict(old)
+        for field, value in item.items():
+            if combined.get(field) in (None, "", []):
+                combined[field] = value
+        for field in ("descriptions", "bullets", "responsibilities", "highlights"):
+            details = []
+            old_details = old.get(field) or []
+            item_details = item.get(field) or []
+            old_details = old_details if isinstance(old_details, list) else [old_details]
+            item_details = item_details if isinstance(item_details, list) else [item_details]
+            for entry in old_details + item_details:
+                if isinstance(entry, str) and entry.strip() and entry.strip() not in details:
+                    details.append(entry.strip())
+            if details:
+                combined[field] = details
+        merged[match_index] = combined
+    return merged
+
 async def get_optional_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_optional_bearer),
 ) -> dict:
@@ -85,6 +152,10 @@ async def parse_resume(request: ResumeParseRequest, user: dict = Depends(get_cur
             text = extract_text(request.file_content or "", request.file_type or "txt")
             if text.strip():
                 parsed = _regex_fallback(text)
+                from recruitment_ai.brains.candidate.resume_parser_brain import resume_parser_brain
+                from recruitment_ai.validators.resume_fields import validate_resume_fields
+                parsed = resume_parser_brain._normalize_education_records(parsed, text)
+                parsed = validate_resume_fields(parsed, text)
         except Exception as fe:
             logger.warning("Regex fallback in /parse failed: %s", fe)
     return ResumeParseResponse(success=result.get("error") is None, parsed=parsed, error=result.get("error"))
@@ -156,22 +227,16 @@ async def parse_upload_resume(file: UploadFile = File(...), user: dict = Depends
             text = extract_text(file_content_b64, ext)
             if text.strip():
                 regex_parsed = _regex_fallback(text)
+                regex_parsed = resume_parser_brain._normalize_education_records(regex_parsed, text)
+                from recruitment_ai.validators.resume_fields import validate_resume_fields
+                regex_parsed = validate_resume_fields(regex_parsed, text)
                 # Merge: regex fills empty fields, brain takes priority
                 for key in ("name", "email", "phone", "location", "linkedin", "summary"):
                     if not parsed.get(key) and regex_parsed.get(key):
                         parsed[key] = regex_parsed[key]
-                for key in ("skills", "softSkills", "tools", "workExperiences", "educations", "projects", "certifications"):
-                    if not parsed.get(key) and regex_parsed.get(key):
-                        parsed[key] = regex_parsed[key]
-                    elif parsed.get(key) and regex_parsed.get(key):
-                        # Merge lists — add items from regex that are missing from brain
-                        existing = parsed[key] or []
-                        existing_set = {json.dumps(e, sort_keys=True) if isinstance(e, dict) else e for e in existing}
-                        for item in (regex_parsed.get(key) or []):
-                            item_key = json.dumps(item, sort_keys=True) if isinstance(item, dict) else item
-                            if item_key not in existing_set:
-                                existing.append(item)
-                        parsed[key] = existing
+                for key in ("skills", "softSkills", "tools", "languages", "workExperiences", "internships", "educations", "projects", "certifications", "awards", "competitions"):
+                    parsed[key] = _merge_resume_lists(parsed.get(key), regex_parsed.get(key), key)
+                parsed = resume_parser_brain._normalize_education_records(parsed, text)
         except Exception as fe:
             logger.warning("Regex merge failed: %s", fe)
         return ResumeParseResponse(success=True, parsed=parsed, error=result.error)
@@ -184,7 +249,12 @@ async def parse_upload_resume(file: UploadFile = File(...), user: dict = Depends
                 ext = (file.filename or "resume.pdf").rsplit(".", 1)[-1].lower()
                 text = extract_text(file_content_b64, ext)
                 if text.strip():
-                    return ResumeParseResponse(success=True, parsed=_regex_fallback(text), error=None)
+                    from recruitment_ai.brains.candidate.resume_parser_brain import resume_parser_brain
+                    from recruitment_ai.validators.resume_fields import validate_resume_fields
+                    parsed = _regex_fallback(text)
+                    parsed = resume_parser_brain._normalize_education_records(parsed, text)
+                    parsed = validate_resume_fields(parsed, text)
+                    return ResumeParseResponse(success=True, parsed=parsed, error=None)
         except Exception as fe:
             logger.warning("Regex fallback also failed: %s", fe)
         return ResumeParseResponse(success=False, parsed={}, error=str(e))

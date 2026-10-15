@@ -303,6 +303,9 @@ FIELD RULES — FOLLOW EXACTLY:
   * school = full institution name (e.g., "Indian Institute of Technology Madras", "Loyola College")
   * date = graduation year or range (e.g., "2020", "2018-2022")
   * gpa = CGPA/percentage if stated (e.g., "8.5 CGPA", "85%")
+  * For HSC/SSLC/10th/12th entries, put the school credential in degree and the actual school name in school; do not use generic labels like "Higher Secondary School" as the school name unless that exact name is all the resume provides.
+  * Copy education only from the [EDUCATION] section or an unmistakable education record. Never copy nearby experience/project descriptions into degree, school, date, or gpa.
+  * Degree must be a concise qualification plus its subject when explicitly stated (for example, "B.Sc. Information Technology"). Remove any sentence or bullet fragment before the qualification.
   * NEVER put degree label in school field or vice versa
 - projects: array of objects — each has: name (actual project title), descriptions (array of strings)
 - certifications: array of objects — each has: name, provider, date

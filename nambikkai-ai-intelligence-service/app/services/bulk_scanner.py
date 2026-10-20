@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 # Valid visible insight classifications
 _VISIBLE_INSIGHT_CLASSIFICATIONS = {"HIGH_PERFORMING", "LOW_PERFORMING"}
 
+# UPSERT conflict key includes account_key to match the SELECT deduplication key
+# (account_key, platform, content_id, report_period). Without account_key in the
+# conflict key, two different accounts scanning the same content_id + report_period
+# would overwrite each other, and the SELECT DISTINCT ON would return inflated counts.
+# Requires migration 026_fix_ai_suggestions_unique_constraint.sql.
 _UPSERT_SQL = """
 INSERT INTO ai_suggestions (
     platform, content_id, account_key,
@@ -54,8 +59,7 @@ INSERT INTO ai_suggestions (
     %(structured_analysis)s, %(llm_status)s,
     %(report_period)s, %(is_low_performing)s, %(published_at)s, NOW()
 )
-ON CONFLICT (platform, content_id, report_period) DO UPDATE SET
-    account_key = EXCLUDED.account_key,
+ON CONFLICT (account_key, platform, content_id, report_period) DO UPDATE SET
     title = EXCLUDED.title,
     content_type = EXCLUDED.content_type,
     canonical_url = CASE
@@ -333,7 +337,9 @@ async def scan_with_candidates(
                         out_val = validate_output(analysis, evidence)
                         pol_val = validate_policy(analysis)
 
-                        # Bounded retry if initial validation failed (at most 1 retry with actual feedback)
+                        # Bounded retry (at most 1) if initial validation failed.
+                        # Pass the actual failure reasons as feedback so the model
+                        # can correct the specific problem rather than regenerating blindly.
                         if not out_val.is_valid or not pol_val.is_valid:
                             first_failures = out_val.failures + pol_val.failures
                             feedback = "; ".join(first_failures)
@@ -341,8 +347,9 @@ async def scan_with_candidates(
                                 "[CandidateScan] Initial validation failed for %s/%s (%s). Attempting bounded retry with feedback...",
                                 platform, content_id, feedback,
                             )
+                            retry_provider = provider
                             try:
-                                retry_analysis = await provider.generate_structured_analysis(evidence, feedback=feedback)
+                                retry_analysis = await retry_provider.generate_structured_analysis(evidence, feedback=feedback)
                                 retry_out = validate_output(retry_analysis, evidence)
                                 retry_pol = validate_policy(retry_analysis)
                                 if retry_out.is_valid and retry_pol.is_valid:
@@ -365,6 +372,8 @@ async def scan_with_candidates(
                                 platform, content_id, "; ".join(failures),
                             )
                             base_row["ai_recommendation"] = "AI recommendation temporarily unavailable — verified performance metrics are intact."
+                            # Always persist the failure reasons so reprocessing scripts
+                            # and diagnostics can identify the exact cause.
                             base_row["structured_analysis"] = Jsonb({
                                 "validation_error": True,
                                 "reasons": failures,
@@ -390,23 +399,28 @@ async def scan_with_candidates(
                     base_row["structured_analysis"] = None
                     base_row["llm_status"] = "unavailable"
                 except ProviderError as p_err:
+                    # ProviderError covers truncated output (finish_reason=length) and
+                    # JSON extraction failures. These are recoverable on retry with a
+                    # larger token budget or a different model, so persist as
+                    # failed_validation (not a hard 'failed') so the reprocess script
+                    # can target them.
                     logger.warning("[CandidateScan] Provider error generating insight for %s/%s: %s", platform, content_id, p_err)
                     base_row["ai_recommendation"] = "AI recommendation temporarily unavailable — verified performance metrics are intact."
                     base_row["structured_analysis"] = Jsonb({
                         "provider_error": True,
                         "reasons": [str(p_err)],
-                        "diagnostic_status": "failed",
+                        "diagnostic_status": "failed_validation",
                     })
-                    base_row["llm_status"] = "failed"
+                    base_row["llm_status"] = "failed_validation"
                 except Exception as exc:
                     logger.error("[CandidateScan] Unexpected error generating insight for %s/%s: %s", platform, content_id, exc)
                     base_row["ai_recommendation"] = "AI recommendation temporarily unavailable — verified performance metrics are intact."
                     base_row["structured_analysis"] = Jsonb({
                         "error": True,
                         "reasons": [str(exc)],
-                        "diagnostic_status": "failed",
+                        "diagnostic_status": "failed_validation",
                     })
-                    base_row["llm_status"] = "failed"
+                    base_row["llm_status"] = "failed_validation"
 
             return content_id, base_row
 

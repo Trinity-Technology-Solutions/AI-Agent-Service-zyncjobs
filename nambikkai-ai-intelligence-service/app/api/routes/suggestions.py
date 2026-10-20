@@ -112,11 +112,11 @@ async def _query_suggestions(
         base_conditions.append("platform = %s")
         base_params.append(platform.lower().strip())
 
-    # CRITICAL PERIOD ISOLATION FIX:
-    # For known period labels (7d/30d/90d), enforce BOTH:
-    #   1. report_period = requested_period  (ensures we only show records analysed for this period)
-    #   2. published_at within the rolling window  (ensures the source content is actually in scope)
-    # Previously only the published_at window was applied, causing 30d/hourly records to appear in 7d results.
+    # Period isolation: for known periods (7d/30d/90d) enforce BOTH:
+    #   1. LOWER(report_period) = canonical_period  — only rows scanned for this period
+    #   2. published_at within the rolling window   — content actually published in scope
+    # This prevents 30d-tagged records appearing in 7d results and vice versa.
+    # Records with NULL published_at are excluded (cannot verify publication window).
     canonical_period = _get_canonical_period_label(period)
     days = get_period_days(period)
     if canonical_period is not None and days is not None:
@@ -128,14 +128,14 @@ async def _query_suggestions(
             " AND published_at <= NOW()"
         )
         base_params.append(str(days))
-    elif period and period.lower() != "all":
+    elif period and period.lower() not in ("all", ""):
         # Unknown period string: fall back to report_period match only
         base_conditions.append("LOWER(report_period) = %s")
         base_params.append(period.lower().strip())
 
     if account_key and account_key.lower() != "all":
         base_conditions.append("account_key = %s")
-        base_params.append(account_key.lower().strip())
+        base_params.append(account_key.strip())
 
     if content_type and content_type.lower() != "all":
         base_conditions.append("content_type = %s")
@@ -159,21 +159,25 @@ async def _query_suggestions(
 
     base_where = f"WHERE {' AND '.join(base_conditions)}"
 
-    # 1. Authoritative counts query across active scope (excludes classification sub-filter only).
-    # DISTINCT ON includes account_key and report_period to avoid collapsing different period/account records.
+    # DISTINCT ON key must exactly match the UPSERT conflict key:
+    # (account_key, platform, content_id, report_period)
+    # This ensures one visible card per logical insight identity.
+    # report_period is returned as LOWER() so the badge always shows the canonical
+    # lowercase label (e.g. '7d') regardless of how it was stored.
     counts_sql = f"""
         WITH latest AS (
-            SELECT DISTINCT ON (account_key, platform, content_id, report_period) classification
+            SELECT DISTINCT ON (account_key, platform, content_id, LOWER(report_period))
+                classification
             FROM ai_suggestions
             {base_where}
-            ORDER BY account_key, platform, content_id, report_period, analyzed_at DESC, id DESC
+            ORDER BY account_key, platform, content_id, LOWER(report_period),
+                     analyzed_at DESC, id DESC
         )
         SELECT classification, COUNT(*)
         FROM latest
         GROUP BY classification
     """
 
-    # 2. Filtered items query
     item_conditions = list(base_conditions)
     item_params = list(base_params)
 
@@ -185,18 +189,20 @@ async def _query_suggestions(
 
     items_sql = f"""
         WITH latest AS (
-            SELECT DISTINCT ON (account_key, platform, content_id, report_period)
+            SELECT DISTINCT ON (account_key, platform, content_id, LOWER(report_period))
                 id, platform, content_id, account_key, title,
                 content_type, canonical_url, metric_name,
                 classification, current_metric, baseline_metric,
                 likes, comments, peer_explanation,
                 evidence_reason as reason,
                 ai_recommendation, structured_analysis, llm_status,
-                report_period, published_at,
+                LOWER(report_period) as report_period,
+                published_at,
                 analyzed_at as scanned_at, is_low_performing
             FROM ai_suggestions
             {item_where}
-            ORDER BY account_key, platform, content_id, report_period, analyzed_at DESC, id DESC
+            ORDER BY account_key, platform, content_id, LOWER(report_period),
+                     analyzed_at DESC, id DESC
         )
         SELECT * FROM latest
         ORDER BY

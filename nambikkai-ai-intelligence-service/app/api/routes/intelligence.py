@@ -32,23 +32,19 @@ VALID_PLATFORMS = list(_PLATFORM_CFG.keys())  # ["youtube", "instagram", "facebo
 def _build_period_condition(period: Optional[str]) -> tuple[Optional[str], list[Any]]:
     """Build SQL condition for period filtering in intelligence queries.
 
-    For known period labels (7d/30d/90d) enforces BOTH:
-      - report_period = canonical period label
-      - published_at within the rolling window
-    This prevents records from one period appearing in queries for another period.
+    For known period labels (7d/30d/90d) enforces report_period = canonical label only.
+    The published_at rolling-window filter is intentionally NOT applied here because
+    content published just outside the rolling window (e.g. 32 days ago for a 30d period)
+    is legitimately included in a 30d scan by the dashboard performance engine.
+    Applying the window filter here would silently exclude valid scanned records and
+    produce false "no data" answers for HIGH_PERFORMING queries.
     """
     from app.api.routes.suggestions import _get_canonical_period_label
     if not period:
         return None, []
     canonical = _get_canonical_period_label(period)
-    days = get_period_days(period)
-    if canonical is not None and days is not None:
-        return (
-            "LOWER(report_period) = %s AND published_at IS NOT NULL"
-            " AND published_at >= NOW() - (CAST(%s AS text) || ' days')::INTERVAL"
-            " AND published_at <= NOW()",
-            [canonical, str(days)]
-        )
+    if canonical is not None:
+        return "LOWER(report_period) = %s", [canonical]
     return "LOWER(report_period) = %s", [period.lower().strip()]
 
 
@@ -339,9 +335,9 @@ def _norm_token(t: str) -> str:
     """Normalize transliterated Tamil and English words phonetically."""
     t = re.sub(r"[^a-zA-Z0-9\s]", " ", t.lower())
     t = re.sub(r"aa+", "a", t)
-    t = re.sub(r"ee+|ea|ei|e", "i", t)
+    t = re.sub(r"ee+|ea|ei", "i", t)
     t = re.sub(r"oo+|oa", "o", t)
-    t = re.sub(r"([b-df-hj-np-tv-z])+", r"", t)
+    t = re.sub(r"([b-df-hj-np-tv-z])\1+", r"\1", t)
     return " ".join(t.split())
 
 
@@ -406,15 +402,15 @@ def _resolve_account_from_question(
             continue
 
         acct_norm = _norm_token(acct)
-        acct_tokens = [tok for tok in acct_norm.split() if tok != "nambikai"]
+        acct_tokens = [tok for tok in acct_norm.split() if tok not in ("nambikai", "nambikkai")]
 
         # Check full key
         if acct in q_lower or acct_norm in q_norm:
             scores[acct] += 20
 
-        # Check distinctive tokens
+        # Check distinctive tokens (require length > 2 to avoid false matches on short tokens)
         for tok in acct_tokens:
-            if tok in q_tokens or tok in q_norm:
+            if len(tok) > 2 and (tok in q_tokens or tok in q_norm):
                 scores[acct] += 10
 
     best_acct = max(scores, key=lambda k: scores[k])
@@ -446,8 +442,17 @@ def _resolve_account_from_question(
             if all(scores[a] <= 0 for a in canonical_accounts):
                 return None, True
 
-    # If not in current question, inherit from conversation history (most recent user turn first)
-    if conversation_history:
+    # If not in current question, inherit from conversation history (most recent user turn first).
+    # Only inherit if the current message does not contain an explicit scope-switch signal
+    # that implies a different account (e.g. "what about media" after an Aanmeegam question).
+    # We check the current message for any account-like token before inheriting.
+    current_has_account_signal = any(
+        len(tok) > 3 and tok in q_norm
+        for acct in canonical_accounts
+        for tok in _norm_token(acct).split()
+        if tok not in ("nambikai", "nambikkai")
+    )
+    if not current_has_account_signal and conversation_history:
         for turn in reversed(conversation_history):
             if turn.get("role") == "user":
                 prev_text = turn.get("content") or turn.get("text") or ""
@@ -689,14 +694,14 @@ async def _retrieve_evidence(
                     where_str = f"WHERE {' AND '.join(clauses)}"
                     sql = f"""
                         WITH latest AS (
-                            SELECT DISTINCT ON (platform, content_id)
+                            SELECT DISTINCT ON (account_key, platform, content_id, report_period)
                                 id, platform, content_id, account_key, title, content_type, canonical_url,
                                 classification, current_metric, baseline_metric, metric_name,
                                 likes, comments, peer_explanation, evidence_reason,
                                 ai_recommendation, report_period, analyzed_at
                             FROM ai_suggestions
                             {where_str}
-                            ORDER BY platform, content_id, analyzed_at DESC
+                            ORDER BY account_key, platform, content_id, report_period, analyzed_at DESC
                         )
                         SELECT * FROM latest
                         ORDER BY current_metric DESC NULLS LAST, analyzed_at DESC
@@ -709,14 +714,14 @@ async def _retrieve_evidence(
                     where_str = f"WHERE {' AND '.join(clauses)}"
                     sql = f"""
                         WITH latest AS (
-                            SELECT DISTINCT ON (platform, content_id)
+                            SELECT DISTINCT ON (account_key, platform, content_id, report_period)
                                 id, platform, content_id, account_key, title, content_type, canonical_url,
                                 classification, current_metric, baseline_metric, metric_name,
                                 likes, comments, peer_explanation, evidence_reason,
                                 ai_recommendation, report_period, analyzed_at
                             FROM ai_suggestions
                             {where_str}
-                            ORDER BY platform, content_id, analyzed_at DESC
+                            ORDER BY account_key, platform, content_id, report_period, analyzed_at DESC
                         )
                         SELECT * FROM latest
                         ORDER BY current_metric ASC NULLS LAST, analyzed_at DESC
@@ -743,14 +748,14 @@ async def _retrieve_evidence(
                     where_str = f"WHERE {' AND '.join(pub_conditions)}"
                     sql = f"""
                         WITH latest AS (
-                            SELECT DISTINCT ON (platform, content_id)
+                            SELECT DISTINCT ON (account_key, platform, content_id, report_period)
                                 id, platform, content_id, account_key, title, content_type, canonical_url,
                                 classification, current_metric, baseline_metric, metric_name,
                                 likes, comments, peer_explanation, evidence_reason,
                                 ai_recommendation, report_period, analyzed_at
                             FROM ai_suggestions
                             {where_str}
-                            ORDER BY platform, content_id, analyzed_at DESC
+                            ORDER BY account_key, platform, content_id, report_period, analyzed_at DESC
                         )
                         SELECT * FROM latest
                         ORDER BY current_metric DESC NULLS LAST, analyzed_at DESC
@@ -821,14 +826,14 @@ async def _retrieve_evidence(
                     where_str = f"WHERE {' AND '.join(spec_conditions)}" if spec_conditions else ""
                     sql = f"""
                         WITH latest AS (
-                            SELECT DISTINCT ON (platform, content_id)
+                            SELECT DISTINCT ON (account_key, platform, content_id, report_period)
                                 id, platform, content_id, account_key, title, content_type, canonical_url,
                                 classification, current_metric, baseline_metric, metric_name,
                                 likes, comments, peer_explanation, evidence_reason,
                                 ai_recommendation, structured_analysis, llm_status, report_period, analyzed_at
                             FROM ai_suggestions
                             {where_str}
-                            ORDER BY platform, content_id, analyzed_at DESC
+                            ORDER BY account_key, platform, content_id, report_period, analyzed_at DESC
                         )
                         SELECT * FROM latest
                         ORDER BY analyzed_at DESC
@@ -842,14 +847,14 @@ async def _retrieve_evidence(
                     where_str = f"WHERE {' AND '.join(clauses)}"
                     sql = f"""
                         WITH latest AS (
-                            SELECT DISTINCT ON (platform, content_id)
+                            SELECT DISTINCT ON (account_key, platform, content_id, report_period)
                                 id, platform, content_id, account_key, title, content_type, canonical_url,
                                 classification, current_metric, baseline_metric, metric_name,
                                 likes, comments, peer_explanation, evidence_reason,
                                 ai_recommendation, report_period, analyzed_at
                             FROM ai_suggestions
                             {where_str}
-                            ORDER BY platform, content_id, analyzed_at DESC
+                            ORDER BY account_key, platform, content_id, report_period, analyzed_at DESC
                         )
                         SELECT * FROM latest
                         ORDER BY
@@ -882,40 +887,41 @@ async def _retrieve_evidence(
                                 d[k] = float(v)
                         records.append(d)
 
-                # Fallback for YouTube: If the user asked about 'video' generally on YouTube,
-                # but all high performers in that period are YouTube Shorts, retrieve YouTube content
-                # so the user gets the true top performer instead of a false 'no data' answer.
+                # Fallback for YouTube: If the user asked about 'video' on YouTube but no
+                # YouTube Video records exist for this scope/period, broaden to all YouTube
+                # content types so the user gets the true top/bottom performer instead of a
+                # false 'no data' answer. This mirrors the dashboard's behaviour.
+                # Only applies when the user said "video" without explicitly saying "short".
                 if (
                     not records
                     and plat_filter == "youtube"
                     and inferred_content_type == "YouTube Video"
                     and "regular" not in question.lower()
                     and "long" not in question.lower()
+                    and "short" not in question.lower()
                 ):
                     intent_cls = "HIGH_PERFORMING" if intent == "high_performing" else "LOW_PERFORMING"
-                    yt_clauses = [f"classification = '{intent_cls}'"]
-                    yt_params = []
-                    yt_clauses.append("platform = %s")
-                    yt_params.append(plat_filter)
+                    yt_clauses = [f"classification = '{intent_cls}'", "platform = %s"]
+                    yt_params: list[Any] = [plat_filter]
                     if acct_filter:
                         yt_clauses.append("account_key = %s")
                         yt_params.append(acct_filter)
-                    p_cond, p_params = _build_period_condition(inferred_period)
-                    if p_cond:
-                        yt_clauses.append(p_cond)
-                        yt_params.extend(p_params)
+                    p_cond2, p_params2 = _build_period_condition(inferred_period)
+                    if p_cond2:
+                        yt_clauses.append(p_cond2)
+                        yt_params.extend(p_params2)
                     yt_where = f"WHERE {' AND '.join(yt_clauses)}"
                     yt_order = "current_metric DESC NULLS LAST" if intent == "high_performing" else "current_metric ASC NULLS LAST"
                     yt_sql = f"""
                         WITH latest AS (
-                            SELECT DISTINCT ON (platform, content_id)
+                            SELECT DISTINCT ON (account_key, platform, content_id, report_period)
                                 id, platform, content_id, account_key, title, content_type, canonical_url,
                                 classification, current_metric, baseline_metric, metric_name,
                                 likes, comments, peer_explanation, evidence_reason,
                                 ai_recommendation, report_period, analyzed_at
                             FROM ai_suggestions
                             {yt_where}
-                            ORDER BY platform, content_id, analyzed_at DESC
+                            ORDER BY account_key, platform, content_id, report_period, analyzed_at DESC
                         )
                         SELECT * FROM latest
                         ORDER BY {yt_order}, analyzed_at DESC
@@ -933,9 +939,10 @@ async def _retrieve_evidence(
                                     d[k] = float(v)
                             records.append(d)
                     if records:
+                        actual_type = records[0].get('content_type') or 'YouTube content'
                         extra["content_type_note"] = (
-                            f"Top YouTube performer in this period is a {records[0].get('content_type')} "
-                            f"(no long-form YouTube Video reached the high-performing threshold)."
+                            f"No YouTube Video records found for this scope. "
+                            f"The top YouTube performer in this period is a {actual_type}."
                         )
 
     except Exception as exc:
@@ -1453,17 +1460,22 @@ def _strip_markdown(text: str) -> str:
     bold markers like **word** display as literal asterisks. This function strips them.
     Preserves Tamil Unicode, hyphens used as bullet points, and plain punctuation.
     """
-    # Remove triple bold/italic (***text***)
+    # Remove triple bold/italic (***text***) first
     text = re.sub(r'\*{3}(.+?)\*{3}', r'\1', text, flags=re.DOTALL)
     # Remove bold (**text**)
     text = re.sub(r'\*{2}(.+?)\*{2}', r'\1', text, flags=re.DOTALL)
-    # Remove italic (*text*) — but preserve standalone hyphens used as bullet points
-    text = re.sub(r'(?<![\-\s])\*(.+?)\*(?![\-\s])', r'\1', text, flags=re.DOTALL)
+    # Remove any remaining lone asterisks used as italic or bullet markers
+    # Replace "* " at line start (markdown bullet) with "- "
+    text = re.sub(r'^\* ', '- ', text, flags=re.MULTILINE)
+    # Remove remaining *text* italic markers (not preceded/followed by space or hyphen)
+    text = re.sub(r'\*([^\*\n]+?)\*', r'\1', text)
+    # Remove any bare asterisks left over
+    text = re.sub(r'\*+', '', text)
     # Remove __bold__ and _italic_
     text = re.sub(r'_{2}(.+?)_{2}', r'\1', text, flags=re.DOTALL)
-    text = re.sub(r'_(.+?)_', r'\1', text, flags=re.DOTALL)
-    # Remove escaped asterisks (\*)
-    text = text.replace('\\*', '')
+    text = re.sub(r'_([^_\n]+?)_', r'\1', text)
+    # Remove escaped asterisks and backslash sequences
+    text = text.replace('\\*', '').replace('\\#', '').replace('\\-', '-')
     # Remove ATX headings (# Heading, ## Heading, etc.) at line start
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
     # Remove backtick inline code (preserve content)

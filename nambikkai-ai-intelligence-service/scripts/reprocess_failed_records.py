@@ -38,14 +38,18 @@ async def reprocess(dry_run: bool = True, limit: int = 100) -> None:
 
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
+                # Target both failed_validation and failed — both are recoverable.
+                # Records with NULL structured_analysis (old schema) are included
+                # because the reasons were not persisted in earlier versions.
                 await cur.execute(
                     """
                     SELECT id, platform, content_id, account_key, title, content_type,
                            canonical_url, metric_name, classification, current_metric,
                            baseline_metric, likes, comments, peer_explanation, evidence_reason,
-                           report_period, published_at, analyzed_at, llm_status
+                           report_period, published_at, analyzed_at, llm_status,
+                           structured_analysis->>'reasons' as failure_reasons
                     FROM ai_suggestions
-                    WHERE llm_status = 'failed_validation'
+                    WHERE llm_status IN ('failed_validation', 'failed')
                     ORDER BY analyzed_at DESC
                     LIMIT %s
                     """,
@@ -59,21 +63,27 @@ async def reprocess(dry_run: bool = True, limit: int = 100) -> None:
         print(f"\n{'='*70}")
         print(f"TARGETED REPROCESSING PLAN {'(DRY RUN)' if dry_run else '(APPLY MODE)'}")
         print(f"{'='*70}")
-        print(f"Found {total} records with llm_status = 'failed_validation'.")
+        print(f"Found {total} records with llm_status IN ('failed_validation', 'failed').")
 
         if total == 0:
             print("No failed records found to reprocess.")
             return
 
-        # Breakdown by platform and report_period
+        # Breakdown by platform, report_period, and failure reason
         breakdown: dict[str, int] = {}
+        null_reasons = 0
         for r in failed_records:
-            k = f"{r['platform']} | {r['report_period']} | {r['classification']}"
+            k = f"{r['platform']} | {r['report_period']} | {r['classification']} | {r['llm_status']}"
             breakdown[k] = breakdown.get(k, 0) + 1
+            if not r.get('failure_reasons'):
+                null_reasons += 1
 
         print("\nBreakdown of targets:")
         for k, cnt in sorted(breakdown.items()):
             print(f"  {k}: {cnt} items")
+        if null_reasons:
+            print(f"\n  Note: {null_reasons} records have no stored failure reason (older schema).")
+            print("  These will be reprocessed through the full generation+validation pipeline.")
 
         print("\nSample records to reprocess:")
         for r in failed_records[:5]:

@@ -72,19 +72,34 @@ Candidate Profile:
 {ZYNCJOBS_CONTEXT}
 
 RULES:
-1. Use ONLY the candidate's actual listed skills. Never assume or invent skills they have.
-2. Compare their real skills against industry-standard requirements for the target role.
-3. Prioritize missing skills as: critical (must have), important (should have), nice_to_have.
-4. Suggest learning resources that are free or widely available (Coursera, YouTube, official docs).
-5. Always mention that they can take a Skill Assessment on ZyncJobs to validate learned skills.
-6. Return ONLY valid JSON. No extra text.""",
+1. Use resume evidence only to decide what the candidate already has; never assume an unlisted skill is present.
+2. Compare their evidence against broadly recognized, current competencies for the exact target role.
+3. If no job description is supplied, still identify reasonable role-based development gaps; do not claim a specific employer requires them.
+4. Return no gaps only when the resume contains clear evidence across the role's important competency areas. A short skills list is not evidence that every relevant skill is present.
+5. Prioritize missing skills as: critical (core for the role), important (commonly useful), nice_to_have.
+6. Suggest learning resources that are free or widely available (Coursera, YouTube, official docs).
+7. Always mention that they can take a Skill Assessment on ZyncJobs to validate learned skills.
+8. Return ONLY valid JSON. No extra text.""",
 
-    "skill_gap_prompt": """Analyze skill gap for this ZyncJobs candidate.
+    "skill_gap_prompt": """Analyze skill gaps for this candidate against the exact target role.
 
 Current Role: {{ current_role }}
 Target Role: {{ target_role }}
 Current Skills: {{ current_skills }}
 Experience: {{ experience_years }} years
+Work Experience Evidence: {{ experience_evidence }}
+Project Evidence: {{ project_evidence }}
+Education Evidence: {{ education_evidence }}
+
+Rules:
+- Only recommend concrete skills genuinely relevant to the exact target role.
+- Do not list skills already present in Current Skills or clearly demonstrated by the work/project evidence.
+- Treat equivalent spellings as the same skill (for example REST and REST APIs).
+- Do not recommend generic terms, years of experience, job duties, or unrelated skills.
+- Return an empty missing_skills array when the resume has no reliable skill gap to report.
+- If no job description is provided, use widely recognized competencies for this occupation and present them as development suggestions, not as requirements from a specific employer.
+- Do not conclude that the candidate has no gaps merely because their resume lists a few skills. Return an empty list only when resume evidence clearly covers the target role's main competency areas.
+- Use at most 8 missing skills. Keep reasons tied to the target role; do not invent job requirements from a specific employer.
 
 Return JSON:
 {

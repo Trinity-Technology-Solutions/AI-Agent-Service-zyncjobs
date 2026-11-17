@@ -72,19 +72,34 @@ Candidate Profile:
 {ZYNCJOBS_CONTEXT}
 
 RULES:
-1. Use ONLY the candidate's actual listed skills. Never assume or invent skills they have.
-2. Compare their real skills against industry-standard requirements for the target role.
-3. Prioritize missing skills as: critical (must have), important (should have), nice_to_have.
-4. Suggest learning resources that are free or widely available (Coursera, YouTube, official docs).
-5. Always mention that they can take a Skill Assessment on ZyncJobs to validate learned skills.
-6. Return ONLY valid JSON. No extra text.""",
+1. Use resume evidence only to decide what the candidate already has; never assume an unlisted skill is present.
+2. Compare their evidence against broadly recognized, current competencies for the exact target role.
+3. If no job description is supplied, still identify reasonable role-based development gaps; do not claim a specific employer requires them.
+4. Return no gaps only when the resume contains clear evidence across the role's important competency areas. A short skills list is not evidence that every relevant skill is present.
+5. Prioritize missing skills as: critical (core for the role), important (commonly useful), nice_to_have.
+6. Suggest learning resources that are free or widely available (Coursera, YouTube, official docs).
+7. Always mention that they can take a Skill Assessment on ZyncJobs to validate learned skills.
+8. Return ONLY valid JSON. No extra text.""",
 
-    "skill_gap_prompt": """Analyze skill gap for this ZyncJobs candidate.
+    "skill_gap_prompt": """Analyze skill gaps for this candidate against the exact target role.
 
 Current Role: {{ current_role }}
 Target Role: {{ target_role }}
 Current Skills: {{ current_skills }}
 Experience: {{ experience_years }} years
+Work Experience Evidence: {{ experience_evidence }}
+Project Evidence: {{ project_evidence }}
+Education Evidence: {{ education_evidence }}
+
+Rules:
+- Only recommend concrete skills genuinely relevant to the exact target role.
+- Do not list skills already present in Current Skills or clearly demonstrated by the work/project evidence.
+- Treat equivalent spellings as the same skill (for example REST and REST APIs).
+- Do not recommend generic terms, years of experience, job duties, or unrelated skills.
+- Return an empty missing_skills array when the resume has no reliable skill gap to report.
+- If no job description is provided, use widely recognized competencies for this occupation and present them as development suggestions, not as requirements from a specific employer.
+- Do not conclude that the candidate has no gaps merely because their resume lists a few skills. Return an empty list only when resume evidence clearly covers the target role's main competency areas.
+- Use at most 8 missing skills. Keep reasons tied to the target role; do not invent job requirements from a specific employer.
 
 Return JSON:
 {
@@ -280,17 +295,18 @@ CRITICAL RULES:
 2. NEVER invent, hallucinate, or guess information not present in the resume.
 3. If a field cannot be confidently extracted, use empty string "" or empty array [].
 4. All fields must be extracted from the ACTUAL resume text provided.
-5. Handle Indian resume formats specifically (SSLC/HSC, CGPA, Indian cities, +91 phone format).""",
+5. Handle US and international resume formats, including City, State, ZIP, US degree abbreviations, and international phone numbers. Never assume a country or work authorization from a person's name, phone code, or city.""",
 
     "resume_parser_prompt": """Parse the resume text below into a JSON object.
 
 FIELD RULES — FOLLOW EXACTLY:
 - name: Full name only (2-4 words, Title Case). Never letter-space it. Extract from top of resume.
 - email: email address string (exact match from text)
-- phone: full phone number with country code if present (e.g., "+91 98765 43210" or "9876543210")
+- phone: full phone number with country code if present (e.g., "+1 512 555 0147" or "+91 98765 43210")
 - dob: date of birth if stated (e.g. "15/06/2002" or "15 Jun 2002"), else empty string
-- location: city name only (e.g., "Bangalore", "Chennai", "Mumbai")
-- country: country name (e.g. "India") — infer from phone/location if not stated
+- location: candidate's current location as stated (e.g., "Austin, TX 78701" or "Chennai, India"); do not use an employer's location
+- country: country name only when explicitly stated in the resume; otherwise empty string
+- linkedin: candidate's personal linkedin.com/in/ profile URL only when present in the resume; otherwise empty string
 - title: current/most recent job title (e.g. "Software Engineer", "Senior Developer", "Project Manager")
 - summary: professional summary paragraph (max 500 chars)
 - skills: array of strings — ALL technical skills: programming languages, frameworks, libraries, databases, cloud, tools
@@ -299,10 +315,13 @@ FIELD RULES — FOLLOW EXACTLY:
 - workExperiences: array of objects — each has: jobTitle, company, date, descriptions (array of strings). PROFESSIONAL jobs ONLY — student internships NEVER go here
 - internships: array of objects — each has: jobTitle, company, date, descriptions (array of strings). Internships/training/industrial training ONLY — never mix with workExperiences
 - educations: array of objects with EXACTLY: { "degree": string, "school": string, "date": string, "gpa": string }
-  * degree = qualification label: "B.Tech", "M.Tech", "MBA", "B.E", "MCA", "BCA", "HSC", "SSLC", "10th", "12th"
+  * degree = qualification label as written, including US degrees such as "B.S.", "B.A.", "M.S.", "M.A.", "MBA", "Ph.D." and other qualifications such as "B.Tech", "M.Tech", "HSC", "SSLC"
   * school = full institution name (e.g., "Indian Institute of Technology Madras", "Loyola College")
   * date = graduation year or range (e.g., "2020", "2018-2022")
   * gpa = CGPA/percentage if stated (e.g., "8.5 CGPA", "85%")
+  * For HSC/SSLC/10th/12th entries, put the school credential in degree and the actual school name in school; do not use generic labels like "Higher Secondary School" as the school name unless that exact name is all the resume provides.
+  * Copy education only from the [EDUCATION] section or an unmistakable education record. Never copy nearby experience/project descriptions into degree, school, date, or gpa.
+  * Degree must be a concise qualification plus its subject when explicitly stated (for example, "B.Sc. Information Technology"). Remove any sentence or bullet fragment before the qualification.
   * NEVER put degree label in school field or vice versa
 - projects: array of objects — each has: name (actual project title), descriptions (array of strings)
 - certifications: array of objects — each has: name, provider, date
@@ -345,7 +364,8 @@ Expected JSON:
   "phone": "+91 98765 43210",
   "dob": "",
   "location": "Bangalore",
-  "country": "India",
+  "country": "",
+  "linkedin": "",
   "title": "Backend Developer",
   "summary": "Motivated Computer Science graduate with strong foundation in Python, Django, and React. Seeking entry-level backend role.",
   "skills": ["Python", "Django", "React", "JavaScript", "PostgreSQL", "Docker", "Git", "AWS"],
@@ -401,8 +421,9 @@ Expected JSON:
   "email": "priya.patel@company.com",
   "phone": "+91-98765-43210",
   "dob": "",
-  "location": "Mumbai",
-  "country": "India",
+  "location": "Mumbai, Maharashtra",
+  "country": "",
+  "linkedin": "",
   "title": "Senior Software Engineer",
   "summary": "Senior Software Engineer with 6+ years building scalable microservices using Java, Spring Boot, and AWS. Led team of 5 engineers.",
   "skills": ["Java", "Spring Boot", "Spring Cloud", "Microservices", "AWS", "Docker", "Kubernetes", "PostgreSQL", "Redis", "Kafka", "Git", "Jenkins"],

@@ -258,6 +258,17 @@ class IntentClassifier:
             state.intent = "CHAT"
             return state
 
+        # Resume Builder actions carry explicit structured routing metadata.
+        # Resume text can contain unrelated "job match" phrases, which used to
+        # win the keyword/LLM classifier and route skill-gap requests to JOB_MATCH.
+        preferences = state.context_data.user_preferences
+        section = str(preferences.get("section") or "").strip().lower()
+        action = str(preferences.get("action") or "").strip().lower()
+        if section == "skills" and action in {"analyze_gap", "skill_gap"}:
+            state.intent = "SKILL_GAP"
+            state.metadata["classifier"] = "structured_context"
+            return state
+
         intent = self._rule_classify(query)
         if intent:
             state.intent = intent

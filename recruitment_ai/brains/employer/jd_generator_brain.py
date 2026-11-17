@@ -52,6 +52,8 @@ class JDGeneratorBrain(Brain):
         cleaned = re.sub(r"^#{1,6}\s*(.*)$", r"\1", text or "", flags=re.MULTILINE)
         cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)  # bold
         cleaned = re.sub(r"\*([^*]+)\*", r"\1", cleaned)       # italic
+        cleaned = re.sub(r"^[-*_]{3,}\s*$", "", cleaned, flags=re.MULTILINE)  # standalone --- lines
+        cleaned = re.sub(r"\s*---+\s*", " ", cleaned)           # inline --- separators
         cleaned = re.sub(r"^[\*\u2022]\s+", "- ", cleaned, flags=re.MULTILINE)  # normalise bullets
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         return cleaned

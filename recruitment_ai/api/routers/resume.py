@@ -285,6 +285,7 @@ def _extract_section(text: str, name: str, after: int = 0) -> tuple[str, int]:
 def _regex_fallback(text: str) -> dict:
     """Pure regex resume parser — works without LLM."""
     import re
+    from recruitment_ai.validators.resume_fields import linkedin_from_source, source_emails, source_phones
 
     pos = 0
     lines = [l.strip() for l in text.split("\n") if l.strip()]
@@ -301,9 +302,9 @@ def _regex_fallback(text: str) -> dict:
             break
 
     # Contact fields
-    email_m = re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", text)
-    phone_m = re.search(r"[\+]?[\d][\d\s\-().]{7,15}[\d]", text)
-    linkedin_m = re.search(r"linkedin\.com/in/[\w-]+", text, re.IGNORECASE)
+    emails = source_emails(text)
+    phones = source_phones(text)
+    linkedin = linkedin_from_source(text)
 
     # Location: labeled OR "City, Country/State" pattern in first 10 lines
     location = ""
@@ -519,10 +520,10 @@ def _regex_fallback(text: str) -> dict:
 
     return {
         "name": name,
-        "email": email_m.group(0) if email_m else "",
-        "phone": phone_m.group(0).strip() if phone_m else "",
+        "email": emails[0] if emails else "",
+        "phone": phones[0] if phones else "",
         "location": location,
-        "linkedin": linkedin_m.group(0) if linkedin_m else "",
+        "linkedin": linkedin,
         "title": "",
         "summary": summary,
         "skills": skills,

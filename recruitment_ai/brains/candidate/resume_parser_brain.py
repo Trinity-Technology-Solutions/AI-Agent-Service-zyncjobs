@@ -5,12 +5,14 @@ import re
 import time
 import json
 import asyncio
-from recruitment_ai.validators.resume_fields import clean_field, validate_resume_fields
+from recruitment_ai.validators.resume_fields import clean_field, source_emails, source_phones, validate_resume_fields
 from recruitment_ai.brains.base import Brain, BrainState, BrainResult
 from recruitment_ai.llm import llm_service
 from recruitment_ai.validators.json_validator import validate_json_strict, ensure_json_fields
 from recruitment_ai.prompts import get_prompt, get_system_prompt
 from recruitment_ai.brains.candidate.skill_keywords import SKILL_KEYWORDS, extract_matched_skills
+
+DEGREE_PATTERN = r"\b(?:b\.?tech|m\.?tech|b\.?eng|m\.?eng|b\.?e|m\.?e|b\.?sc|m\.?sc|b\.?s|m\.?s|b\.?com|m\.?com|b\.?a|m\.?a|mba|bba|mca|bca|mbbs|bds|bachelor(?:'s)?|master(?:'s)?|ph\.?d|doctorate|associate(?:'s)?|diploma|hsc|ssc|sslc|10th|12th|class\s*(?:x|xii|10|12))\b"
 
 
 class ResumeParserBrain(Brain):
@@ -181,7 +183,7 @@ class ResumeParserBrain(Brain):
             if len(fields) < 2:
                 continue
             first = fields[0]
-            if not re.search(r"\b(b\.?sc|m\.?sc|b\.?tech|m\.?tech|b\.?e|m\.?e|bachelor|master|mba|bca|mca|hsc|sslc|10th|12th)\b", first, re.I):
+            if not re.search(DEGREE_PATTERN, first, re.I):
                 continue
             institution = next((field for field in fields[1:] if re.search(r"\b(university|college|institute|school|academy)\b", field, re.I) and not re.fullmatch(r"university|college|school|institution", field, re.I)), "")
             year = next((field for field in fields if re.fullmatch(r"(?:19|20)\d{2}", field)), "")
@@ -218,7 +220,7 @@ class ResumeParserBrain(Brain):
     def _normalize_education_records(self, parsed: dict, content: str) -> dict:
         """Remove unrelated prose from education fields and trust explicit source rows."""
         result = dict(parsed)
-        degree_re = re.compile(r"\b(?:b\.?tech|m\.?tech|b\.?e|m\.?e|b\.?sc|m\.?sc|b\.?com|m\.?com|b\.?a|m\.?a|mba|bba|mca|bca|mbbs|bds|bachelor(?:'s)?|master(?:'s)?|ph\.?d|doctorate|diploma|hsc|ssc|sslc|10th|12th|class\s*(?:x|xii|10|12))\b", re.I)
+        degree_re = re.compile(DEGREE_PATTERN, re.I)
         year_re = re.compile(r"\b(?:19|20)\d{2}(?:\s*[-–]\s*(?:(?:19|20)\d{2}|present|current))?\b", re.I)
         score_re = re.compile(r"\b(?:cgpa|gpa)\s*:?\s*\d+(?:\.\d+)?(?:\s*/\s*\d+(?:\.\d+)?)?|\b\d{1,3}(?:\.\d+)?\s*%", re.I)
         def clean_degree(value):
@@ -364,7 +366,8 @@ class ResumeParserBrain(Brain):
         # resume signals and real content to avoid accepting arbitrary documents.
         has_resume_detail = bool(
             re.search(r"\b(19|20)\d{2}\b", content) or
-            re.search(r"\b(b\.?tech|bachelor|master|diploma|university|college|school)\b", text) or
+            re.search(DEGREE_PATTERN, text, re.I) or
+            re.search(r"\b(university|college|school)\b", text) or
             len(re.findall(r"(?m)^\s*[•*-]\s+", content)) >= 2
         )
         structured_resume = section_hits >= 4 and len(content.split()) >= 30 and has_resume_detail
@@ -393,17 +396,17 @@ class ResumeParserBrain(Brain):
         
         # Email validation (regex is more reliable)
         if not parsed.get("email"):
-            match = re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", content)
-            parsed["email"] = match.group() if match else ""
-            confidence_scores["email"] = 0.9 if match else 0.0
+            emails = source_emails(content)
+            parsed["email"] = emails[0] if emails else ""
+            confidence_scores["email"] = 0.9 if emails else 0.0
         else:
             confidence_scores["email"] = 0.95
         
         # Phone validation
         if not parsed.get("phone"):
-            match = re.search(r"(?:\+\d{1,3}[\s\-]?)?\d[\d\s\-\.\(\)]{8,}\d", content)
-            parsed["phone"] = match.group().strip() if match else ""
-            confidence_scores["phone"] = 0.8 if match else 0.0
+            phones = source_phones(content)
+            parsed["phone"] = phones[0] if phones else ""
+            confidence_scores["phone"] = 0.8 if phones else 0.0
         else:
             # Validate phone format
             phone = parsed["phone"]
@@ -420,10 +423,9 @@ class ResumeParserBrain(Brain):
         else:
             confidence_scores["location"] = 0.8
         
-        # Country inference
+        # Country must be stated by the candidate; a city or dialing code is not evidence.
         if not parsed.get("country"):
-            if parsed.get("location") or "+91" in content or "india" in content.lower():
-                parsed["country"] = "India"
+            parsed["country"] = self._extract_explicit_country(content)
             confidence_scores["country"] = 0.7 if parsed.get("country") else 0.0
         else:
             confidence_scores["country"] = 0.8
@@ -555,62 +557,80 @@ class ResumeParserBrain(Brain):
         return ""
 
     def _extract_location(self, content: str) -> str:
-        indian_cities = [
-            'Chennai', 'Bangalore', 'Bengaluru', 'Mumbai', 'Hyderabad', 'Pune', 'Delhi', 'New Delhi', 'Noida', 'Gurgaon', 'Gurugram',
-            'Kolkata', 'Ahmedabad', 'Coimbatore', 'Kochi', 'Jaipur', 'Indore', 'Bhopal', 'Nagpur', 'Surat', 'Lucknow', 'Visakhapatnam',
-            'Vizag', 'Mysore', 'Mysuru', 'Madurai', 'Trichy', 'Tiruchirappalli', 'Vellore', 'Pondicherry', 'Puducherry', 'Thiruvananthapuram',
-            'Trivandrum', 'Kozhikode', 'Salem', 'Erode', 'Tirupur', 'Chandigarh', 'Kanpur', 'Agra', 'Varanasi', 'Patna', 'Ranchi',
-            'Bhubaneswar', 'Guwahati', 'Dehradun', 'Raipur', 'Vijayawada', 'Guntur', 'Nellore', 'Kakinada', 'Warangal', 'Aurangabad',
-            'Nashik', 'Amritsar', 'Jalandhar', 'Ludhiana', 'Goa', 'Panaji', 'Mangalore', 'Mangaluru', 'Belgaum', 'Hubli', 'Udaipur',
-            'Jodhpur', 'Rajkot', 'Vadodara', 'Jamshedpur', 'Siliguri', 'Durgapur', 'Meerut', 'Ghaziabad', 'Faridabad',
-        ]
-        for city in indian_cities:
-            if re.search(rf'\b{re.escape(city)}\b', content, re.I):
-                if city == 'Bengaluru': return 'Bangalore'
-                if city == 'Mysuru': return 'Mysore'
-                if city == 'Tiruchirappalli': return 'Trichy'
-                if city == 'Vizag': return 'Visakhapatnam'
-                if city == 'Gurugram': return 'Gurgaon'
-                if city == 'New Delhi': return 'Delhi'
-                if city == 'Trivandrum': return 'Thiruvananthapuram'
-                return city
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        for line in lines[:12]:
+            match = re.match(r"^(?:current\s+location|location|address|city)\s*:\s*(.+)$", line, re.I)
+            if match:
+                value = match.group(1).split(" | ", 1)[0].strip()
+                if value and not re.search(r"@|https?://", value, re.I):
+                    return value[:255]
+        for line in lines[:8]:
+            if re.fullmatch(r"[A-Za-z][A-Za-z .'-]+,\s*(?:[A-Z]{2}|India|Canada|USA|United States(?: of America)?|Mexico|United Kingdom)(?:\s+\d{5}(?:-\d{4})?)?", line, re.I) and "@" not in line:
+                return line
+        return ''
+
+    def _extract_explicit_country(self, content: str) -> str:
+        match = re.search(r"(?im)^\s*country\s*:\s*(United States(?: of America)?|USA|India|Canada|Mexico|United Kingdom)\s*$", content)
+        if match:
+            return match.group(1)
+        for line in content.splitlines()[:12]:
+            if re.match(r"^\s*(?:current\s+location|location|address|city)\s*:", line, re.I):
+                country = re.search(r"\b(United States(?: of America)?|USA|India|Canada|Mexico|United Kingdom)\b", line, re.I)
+                if country:
+                    return country.group(1)
         return ''
 
     def _fallback_parse(self, content: str) -> dict:
         name = self._extract_name(content)
-        email = re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", content)
-        phone_match = None
-        for m in re.finditer(r"(?:\+\d{1,3}[\s\-]?)?\d[\d\s\-\.\(\)]{8,}\d", content):
-            candidate = m.group().strip()
-            digits = re.sub(r"\D", "", candidate)
-            if re.match(r"^(19|20)\d{2}.{0,3}(19|20)\d{2}$", candidate.strip()):
-                continue
-            if len(digits) < 7:
-                continue
-            phone_match = candidate
-            break
+        emails = source_emails(content)
+        phones = source_phones(content)
         skills = list(extract_matched_skills(content))
         labeled = self._section_label_text(content)
         parts = re.split(r"(?m)^\[([A-Z]+)\]\s*$", labeled)
-        education_section = next((parts[i + 1] for i in range(1, len(parts) - 1, 2) if parts[i] == "EDUCATION"), "")
+        sections = {parts[i]: parts[i + 1] for i in range(1, len(parts) - 1, 2)}
+        education_section = sections.get("EDUCATION", "")
         edu_source = education_section if education_section.strip() else content
         edu_lines = [
             l.strip() for l in edu_source.split("\n")
-            if re.search(r"\b(b\.?tech|b\.?e|m\.?tech|mba|bachelor|master|phd|diploma|university|college|institute|school|icam|loyola|iit|nit|hsc|sslc|10th|12th|higher secondary|secondary|matriculation)\b", l, re.IGNORECASE)
+            if re.search(DEGREE_PATTERN, l, re.I) or re.search(r"\b(university|college|institute|school|icam|loyola|iit|nit|higher secondary|secondary|matriculation)\b", l, re.I)
         ]
-        educations = [self._classify_education(l) for l in edu_lines[:3]]
+        educations = []
+        for line in edu_lines[:12]:
+            if educations and not educations[-1].get("school") and re.search(r"\b(university|college|institute|school)\b", line, re.I) and not re.search(r"\b\d{1,2}/\d{4}\b", line):
+                educations[-1]["school"] = line.split(" - ", 1)[0].strip()
+                continue
+            if re.search(DEGREE_PATTERN, line, re.I) or re.search(r"\b(higher secondary|secondary school)\b", line, re.I):
+                record = self._classify_education(line)
+                if record.get("degree") in {"HSC", "SSLC"} and not re.search(r"\b(university|college|institute|school)\b", line, re.I):
+                    record["school"] = ""
+                educations.append(record)
+        summary = " ".join(line.strip(" -\t") for line in sections.get("SUMMARY", "").splitlines() if line.strip())[:500]
+        work_experiences, internships = [], []
+        experience_lines = [line.strip() for line in sections.get("EXPERIENCE", "").splitlines() if line.strip()]
+        for index, line in enumerate(experience_lines):
+            match = re.match(r"^([^,|]+)[,|]\s*((?:\d{1,2}/\d{4}|[A-Za-z]{3,9}\s+\d{4}).*)$", line)
+            if not match:
+                continue
+            role = clean_field(match.group(1), "jobTitle")
+            company_line = experience_lines[index + 1] if index + 1 < len(experience_lines) else ""
+            company = company_line.split(" - ", 1)[0].strip()
+            if not role or not company or " - " not in company_line or re.search(r"\b(?:intern|developer|engineer|analyst|manager)\b", company, re.I):
+                continue
+            date = clean_field(match.group(2), "date")
+            record = {"jobTitle": role, "company": company, "date": date, "descriptions": []}
+            (internships if re.search(r"\bintern\b", role, re.I) else work_experiences).append(record)
         location = self._extract_location(content)
         return {
             "name": name or "Unknown",
-            "email": email.group() if email else "",
-            "phone": phone_match or "",
+            "email": emails[0] if emails else "",
+            "phone": phones[0] if phones else "",
             "location": location,
-            "country": "India" if location else "",
+            "country": self._extract_explicit_country(content),
             "title": next((clean_field(line, "jobTitle") for line in content.splitlines()[:15] if clean_field(line, "jobTitle")), ""),
             "skills": skills, "softSkills": [], "tools": [],
-            "workExperiences": [], "internships": [], "educations": educations,
+            "workExperiences": work_experiences, "internships": internships, "educations": educations,
             "projects": [], "certifications": [], "competitions": [],
-            "summary": "",
+            "summary": summary,
             "languages": [], "awards": []
         }
 
@@ -633,6 +653,11 @@ class ResumeParserBrain(Brain):
             school_name = re.sub(r"\b(hsc|sslc|10th|12th|higher secondary|secondary school)\b", "", line, flags=re.I).strip(" |-")
             return {"degree": "HSC" if re.search(r"\b(hsc|12th|higher secondary)\b", line, re.I) else "SSLC",
                     "school": school_name or line, "date": year, "gpa": gpa_val}
+        degree = re.search(DEGREE_PATTERN, line, re.I)
+        if degree:
+            degree_text = line[degree.start():].split(",", 1)[0]
+            degree_text = re.sub(r"\b(?:19|20)\d{2}\b.*$", "", degree_text).strip(" |-.,")
+            return {"degree": degree_text, "school": "", "date": year, "gpa": gpa_val}
         return {"degree": "", "school": line.replace(year, "").strip(" |-"), "date": year, "gpa": gpa_val}
 
 

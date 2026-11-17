@@ -295,17 +295,18 @@ CRITICAL RULES:
 2. NEVER invent, hallucinate, or guess information not present in the resume.
 3. If a field cannot be confidently extracted, use empty string "" or empty array [].
 4. All fields must be extracted from the ACTUAL resume text provided.
-5. Handle Indian resume formats specifically (SSLC/HSC, CGPA, Indian cities, +91 phone format).""",
+5. Handle US and international resume formats, including City, State, ZIP, US degree abbreviations, and international phone numbers. Never assume a country or work authorization from a person's name, phone code, or city.""",
 
     "resume_parser_prompt": """Parse the resume text below into a JSON object.
 
 FIELD RULES — FOLLOW EXACTLY:
 - name: Full name only (2-4 words, Title Case). Never letter-space it. Extract from top of resume.
 - email: email address string (exact match from text)
-- phone: full phone number with country code if present (e.g., "+91 98765 43210" or "9876543210")
+- phone: full phone number with country code if present (e.g., "+1 512 555 0147" or "+91 98765 43210")
 - dob: date of birth if stated (e.g. "15/06/2002" or "15 Jun 2002"), else empty string
-- location: city name only (e.g., "Bangalore", "Chennai", "Mumbai")
-- country: country name (e.g. "India") — infer from phone/location if not stated
+- location: candidate's current location as stated (e.g., "Austin, TX 78701" or "Chennai, India"); do not use an employer's location
+- country: country name only when explicitly stated in the resume; otherwise empty string
+- linkedin: candidate's personal linkedin.com/in/ profile URL only when present in the resume; otherwise empty string
 - title: current/most recent job title (e.g. "Software Engineer", "Senior Developer", "Project Manager")
 - summary: professional summary paragraph (max 500 chars)
 - skills: array of strings — ALL technical skills: programming languages, frameworks, libraries, databases, cloud, tools
@@ -314,7 +315,7 @@ FIELD RULES — FOLLOW EXACTLY:
 - workExperiences: array of objects — each has: jobTitle, company, date, descriptions (array of strings). PROFESSIONAL jobs ONLY — student internships NEVER go here
 - internships: array of objects — each has: jobTitle, company, date, descriptions (array of strings). Internships/training/industrial training ONLY — never mix with workExperiences
 - educations: array of objects with EXACTLY: { "degree": string, "school": string, "date": string, "gpa": string }
-  * degree = qualification label: "B.Tech", "M.Tech", "MBA", "B.E", "MCA", "BCA", "HSC", "SSLC", "10th", "12th"
+  * degree = qualification label as written, including US degrees such as "B.S.", "B.A.", "M.S.", "M.A.", "MBA", "Ph.D." and other qualifications such as "B.Tech", "M.Tech", "HSC", "SSLC"
   * school = full institution name (e.g., "Indian Institute of Technology Madras", "Loyola College")
   * date = graduation year or range (e.g., "2020", "2018-2022")
   * gpa = CGPA/percentage if stated (e.g., "8.5 CGPA", "85%")
@@ -363,7 +364,8 @@ Expected JSON:
   "phone": "+91 98765 43210",
   "dob": "",
   "location": "Bangalore",
-  "country": "India",
+  "country": "",
+  "linkedin": "",
   "title": "Backend Developer",
   "summary": "Motivated Computer Science graduate with strong foundation in Python, Django, and React. Seeking entry-level backend role.",
   "skills": ["Python", "Django", "React", "JavaScript", "PostgreSQL", "Docker", "Git", "AWS"],
@@ -419,8 +421,9 @@ Expected JSON:
   "email": "priya.patel@company.com",
   "phone": "+91-98765-43210",
   "dob": "",
-  "location": "Mumbai",
-  "country": "India",
+  "location": "Mumbai, Maharashtra",
+  "country": "",
+  "linkedin": "",
   "title": "Senior Software Engineer",
   "summary": "Senior Software Engineer with 6+ years building scalable microservices using Java, Spring Boot, and AWS. Led team of 5 engineers.",
   "skills": ["Java", "Spring Boot", "Spring Cloud", "Microservices", "AWS", "Docker", "Kubernetes", "PostgreSQL", "Redis", "Kafka", "Git", "Jenkins"],

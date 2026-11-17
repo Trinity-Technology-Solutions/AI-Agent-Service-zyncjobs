@@ -5,6 +5,70 @@ from urllib.parse import urlparse
 
 ROLES = re.compile(r"\b(developer|engineer|analyst|manager|architect|consultant|director|lead|officer|executive|specialist|associate|coordinator|administrator|admin|recruiter|designer|tester|technician|operator|accountant|auditor|teacher|professor|researcher|scientist|chemist|nurse|doctor|physician|surgeon|dentist|lawyer|advocate|attorney|pharmacist|therapist|intern|trainee|apprentice|assistant|supervisor|president|head|chef|cook|driver|mechanic|electrician|plumber|welder|representative|salesperson|clerk|cashier|banker|writer|editor|journalist|ceo|cto|cfo|qa|sre)\b", re.I)
 PROSE = re.compile(r"\b(with a|track record|responsible for|worked on|looking for|seeking|passionate|experienced in|experience in|proficient in|skilled in|i am|my|delivering|publishing|work experience|professional summary|career objective|contact details|education|curriculum vitae)\b", re.I)
+LINKEDIN_PROFILE = re.compile(r"(?<![\w.-])(?:https?://)?(?:www\.)?linkedin\.com/in/[A-Za-z0-9_-]+", re.I)
+EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+PHONE = re.compile(r"\+?\d[\d \t().-]{6,}\d")
+CONTACT_LABEL = re.compile(r"\b(?:phone|mobile|contact|tel(?:ephone)?)\b", re.I)
+NON_CONTACT_NUMBER = re.compile(r"\b(?:isbn|issn|doi|publication|conference)\b", re.I)
+
+
+def _source_text(content):
+    """Normalize OCR/PDF text before extracting contact details from it."""
+    return (content or "").replace("\u200b", "").replace("\u200c", "").replace("\u200d", "")
+
+
+def source_emails(content):
+    """Return only syntactically valid emails appearing in the source document."""
+    text = _source_text(content)
+    # PDFs frequently insert whitespace around @ or dots when text is extracted.
+    compact = re.sub(
+        r"([\w.+-]+)\s*@\s*([\w-]+(?:\s*\.\s*[\w-]+)+)",
+        lambda match: match.group(1) + "@" + re.sub(r"\s*\.\s*", ".", match.group(2)),
+        text,
+    )
+    return list(dict.fromkeys(filter(None, (clean_field(match.group(), "email") for match in EMAIL.finditer(compact)))))
+
+
+def source_phones(content):
+    """Extract resume contact numbers without treating ISBNs/dates as phone numbers.
+
+    A labelled contact line is preferred, then an unlabelled number in the first
+    part of the resume. Publications and reference sections never supply phones.
+    """
+    lines = _source_text(content).splitlines()
+    labelled, header = [], []
+    for index, line in enumerate(lines):
+        if NON_CONTACT_NUMBER.search(line):
+            continue
+        candidate_line = line
+        if CONTACT_LABEL.search(line) and index + 1 < len(lines):
+            candidate_line = f"{line} {lines[index + 1]}"
+        target = labelled if CONTACT_LABEL.search(line) else header
+        for match in PHONE.finditer(candidate_line):
+            phone = clean_field(match.group().strip(), "phone")
+            if phone and phone not in target:
+                target.append(phone)
+    # The opening lines are normally the resume header; avoid phone-like values
+    # buried in education, publication and project sections.
+    early_header = []
+    for line in lines[:12]:
+        if NON_CONTACT_NUMBER.search(line):
+            continue
+        for match in PHONE.finditer(line):
+            phone = clean_field(match.group().strip(), "phone")
+            if phone and phone not in early_header:
+                early_header.append(phone)
+    return list(dict.fromkeys(labelled + early_header + header))
+
+
+def linkedin_from_source(content):
+    normalized = re.sub(r"\s*([./])\s*", r"\1", _source_text(content))
+    for match in LINKEDIN_PROFILE.finditer(normalized):
+        candidate = match.group()
+        parsed = urlparse(candidate if candidate.lower().startswith(("http://", "https://")) else "https://" + candidate)
+        if parsed.hostname in {"linkedin.com", "www.linkedin.com"} and re.fullmatch(r"/in/[A-Za-z0-9_-]+", parsed.path):
+            return "https://www.linkedin.com" + parsed.path
+    return ""
 
 def clean_field(value, kind):
     if not isinstance(value, str):
@@ -26,9 +90,11 @@ def clean_field(value, kind):
         return value.lower() if re.fullmatch(r"[^\s@]+@(?:[a-z0-9-]+\.)+[a-z]{2,63}", value, re.I) else ""
     if kind == "phone":
         digits = re.sub(r"\D", "", value)
-        return value if re.fullmatch(r"\+?[\d ().-]+", value) and 7 <= len(digits) <= 15 and len(set(digits)) > 1 and not re.fullmatch(r"\d{4}[-/]\d{2}[-/]\d{2}|\d{4}\s*[-/]\s*\d{4}", value) else ""
+        isbn_like = re.fullmatch(r"(?:97[89][ -]?)?\d{1,5}(?:[ -]\d{1,7}){2,}[\dXx]", value)
+        date_or_years = re.fullmatch(r"(?:\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|(?:19|20)\d{2}\s*[-/]\s*(?:19|20)\d{2})", value)
+        return value if re.fullmatch(r"\+?[\d ().-]+", value) and 7 <= len(digits) <= 15 and len(set(digits)) > 1 and not isbn_like and not date_or_years else ""
     if kind == "degree":
-        return value if re.search(r"\b(bachelor|master|doctorate|ph\.?d|diploma|b\.?tech|m\.?tech|b\.?e|m\.?e|b\.?sc|m\.?sc|b\.?com|m\.?com|mba|bba|mca|bca|mbbs|bds|hsc|sslc|ssc|secondary|10th|12th)\b", value, re.I) and not ROLES.search(value) else ""
+        return value if re.search(r"\b(bachelor|master|doctorate|ph\.?d|diploma|associate(?:'s)?(?:\s+degree|\s+of)?|b\.?tech|m\.?tech|b\.?eng|m\.?eng|b\.?e|m\.?e|b\.?sc|m\.?sc|b\.?s|m\.?s|b\.?a|m\.?a|b\.?com|m\.?com|mba|bba|mca|bca|mbbs|bds|hsc|sslc|ssc|secondary|10th|12th)\b", value, re.I) and (not ROLES.search(value) or re.search(r"\bassociate(?:'s)?\s+(?:degree|of)\b", value, re.I)) else ""
     if kind == "skill" and ROLES.search(value):
         return ""
     if kind == "jobTitle":
@@ -43,14 +109,18 @@ def clean_field(value, kind):
         return ""
     if kind == "gender":
         return value if value.lower() in {"male", "female", "non-binary", "other"} else ""
+    if kind == "date" and re.fullmatch(r"\d{1,2}/\d{4}\s+to\s+(?:current|present|\d{1,2}/\d{4})", value, re.I):
+        return value
     if kind == "date" and re.fullmatch(r"\d{4}\s*[-–]\s*\d{4}", value):
         return value
     if kind == "date":
         return value if re.fullmatch(r"(present|current|now|\d{4}|\d{4}[-/]\d{1,2}([-/]\d{1,2})?|\d{1,2}[-/]\d{4}|[a-z]{3,9}[ ,]+\d{4})(\s*[-–]\s*(present|current|now|\d{4}|[a-z]{3,9}[ ,]+\d{4}))?", value, re.I) else ""
     if re.search(r"@|https?://|\b(phone|email|mobile)\b", value, re.I):
         return ""
-    if kind in {"location", "country"}:
-        return value if len(value) <= 100 and not ROLES.search(value) and not re.search(r"\d{5}", value) else ""
+    if kind == "location":
+        return value if len(value) <= 255 and not ROLES.search(value) and not re.fullmatch(r"[\d .(),+\-]+", value) else ""
+    if kind == "country":
+        return value if len(value) <= 100 and not ROLES.search(value) and not re.search(r"\d", value) else ""
     if kind == "company":
         return value
     return value if len(value) <= 100 and len(value.split()) <= 10 else ""
@@ -58,6 +128,12 @@ def clean_field(value, kind):
 def evidence(value, source, kind):
     if not value or not source:
         return False
+    if kind == "email":
+        return value.lower() in {email.lower() for email in source_emails(source)}
+    if kind == "degree" and value.upper() == "HSC":
+        return bool(re.search(r"\b(?:HSC|higher secondary|12th)\b", source, re.I))
+    if kind == "degree" and value.upper() == "SSLC":
+        return bool(re.search(r"\b(?:SSLC|secondary school|10th)\b", source, re.I))
     if kind == "date":
         return re.sub(r"\s", "", value.lower()) in re.sub(r"\s", "", source.lower())
     if kind == "phone":
@@ -77,8 +153,11 @@ def validate_resume_fields(parsed, content):
                 return clean
         return ""
     data["name"] = pick("name", [data.get("name"), data.get("fullName"), contact.get("name"), contact.get("fullName")])
-    data["email"] = pick("email", [data.get("email"), data.get("emailAddress"), contact.get("email")] + re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", content))
-    data["phone"] = pick("phone", [data.get("phone"), data.get("phoneNumber"), data.get("mobile"), contact.get("phone")] + re.findall(r"\+?\d[\d ().-]{6,}\d", content))
+    # Prefer source-derived contacts.  Model output can mistake a DOB, year range
+    # or publication ISBN for a phone number; the source helpers filter those.
+    data["email"] = pick("email", source_emails(content) + [data.get("email"), data.get("emailAddress"), contact.get("email")])
+    data["phone"] = pick("phone", source_phones(content) + [data.get("phone"), data.get("phoneNumber"), data.get("mobile"), contact.get("phone")])
+    data["linkedin"] = linkedin_from_source(content)
     for key in ("location", "country", "dob", "gender", "currentCompany"):
         data[key] = pick("company" if key == "currentCompany" else key, [data.get(key)])
     kinds = {"jobTitle": "jobTitle", "title": "jobTitle", "role": "jobTitle", "company": "company", "school": "company", "institution": "company", "provider": "company", "degree": "degree", "name": "label", "location": "location", "startDate": "date", "endDate": "date", "date": "date", "issuedDate": "date", "expiryDate": "date", "gpa": "label", "score": "label", "credentialId": "label", "url": "url", "projectUrl": "url", "certificationUrl": "url"}

@@ -10,6 +10,18 @@ from recruitment_ai.brains.candidate.resume_parser_brain import ResumeParserBrai
 
 resume_parser_brain = ResumeParserBrain()
 
+
+def test_us_location_fallback_keeps_city_state_zip_without_guessing_country():
+    source = 'Jane Candidate\nLocation: Austin, TX 78701\n+1 512 555 0147\nEducation: B.S. Computer Science'
+    assert resume_parser_brain._extract_location(source) == 'Austin, TX 78701'
+    assert resume_parser_brain._extract_explicit_country(source) == ''
+    assert resume_parser_brain._extract_explicit_country('Location: Austin, TX, USA') == 'USA'
+
+
+def test_location_fallback_does_not_use_old_employer_city_as_current_location():
+    source = 'Jane Candidate\nEmail: jane@example.com\nExperience:\nWorked in Chennai five years ago\nEducation: B.S. Computer Science'
+    assert resume_parser_brain._extract_location(source) == ''
+
 JEFFRIN_RESUME = """JEFFRIN J
 Backend Developer
 PROFESSIONAL SUMMARY
@@ -214,32 +226,19 @@ async def test_zp491_work_experience_extraction(mock_ollama_failure):
 
 @pytest.mark.asyncio
 async def test_zp492_education_extraction(mock_ollama_failure):
-    """ZP-492: Verify education extraction — college gets college/degree/year/gpa,
-    school (HSC) gets school/class/year/percentage"""
+    """Fallback keeps each degree with its own institution and date."""
     state = BrainState(query=JEFFRIN_RESUME)
     result = await resume_parser_brain.run(state)
     assert result.response is not None
     educations = result.response.get("educations", [])
     assert len(educations) > 0, "No education entries extracted"
 
-    types = [e.get("type") for e in educations]
-    assert "college" in types, "College entry not classified"
-    assert "school" in types, "School (HSC) entry not classified"
-
-    college = next(e for e in educations if e.get("type") == "college")
-    assert "college" in college, "college field missing from college entry"
-    assert "degree" in college, "degree field missing from college entry"
-    assert "year" in college, "year field missing from college entry"
-    assert "gpa" in college, "gpa field missing from college entry"
-    assert "school" not in college or college.get("type") == "college"
-
-    school = next(e for e in educations if e.get("type") == "school")
-    assert "school" in school, "school field missing from school entry"
-    assert "class" in school, "class field missing from school entry"
-    assert "year" in school, "year field missing from school entry"
-    assert "percentage" in school, "percentage field missing from school entry"
-    assert "degree" not in school, "degree field must not appear in school entry"
-    assert "gpa" not in school, "gpa field must not appear in school entry"
+    college = next(e for e in educations if e.get("degree") == "B.Tech")
+    assert "Loyola ICAM College" in college["school"]
+    assert college["date"] == "2021"
+    school = next(e for e in educations if e.get("degree") == "HSC")
+    assert "St. Joseph's Higher Secondary School" in school["school"]
+    assert school["date"] == "2019"
 
 
 # ─── ZP-493: Project extraction ─────────────────────────────────────────────
